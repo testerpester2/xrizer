@@ -1,0 +1,10 @@
+[package]
+name = "fakexr"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+openxr-sys = { workspace = true }
+paste = "1.0.15"
+ash = { workspace = true }
+crossbeam-utils = "0.8.20"
