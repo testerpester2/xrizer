@@ -449,7 +449,7 @@ impl vr::IVRCompositor028_Interface for Compositor {
             let backend = &self.backend.get().unwrap();
             let last_info = self.swapchain_create_info.load();
             if !backend.is_usable_swapchain(&last_info, texture, bounds) {
-                debug!("recreating swapchain");
+                info!("recreating swapchain");
                 self.swapchain_create_info
                     .store(backend.get_swapchain_create_info(texture, bounds).into());
                 let FrameController { stream, waiter, .. } = frame_lock.take().unwrap();

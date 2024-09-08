@@ -245,7 +245,7 @@ fn load_action_sets(
 
 struct LoadedActionInfo {
     name: String,
-    action: super::InputAction,
+    action: super::ActionData,
 }
 
 fn load_actions(
@@ -270,7 +270,7 @@ fn load_actions(
 
         trace!("Creating action {xr_friendly_name} (localized: {localized}) in set {set_name:?}");
         let set = &sets[set_name];
-        use super::InputAction::*;
+        use super::ActionData::*;
 
         fn create_action<T: xr::ActionTy>(
             set: &xr::ActionSet,
@@ -294,13 +294,15 @@ fn load_actions(
             ActionType::Boolean => {
                 Bool(create_action::<bool>(&set, &xr_friendly_name, localized, paths).unwrap())
             }
-            ActionType::Vector1 => Float {
+            ActionType::Vector1 => Vector1 {
                 action: create_action::<f32>(&set, &xr_friendly_name, localized, paths).unwrap(),
                 last_value: super::AtomicF32::new(0.0),
             },
-            ActionType::Vector2 => Vector2(
-                create_action::<xr::Vector2f>(&set, &xr_friendly_name, localized, paths).unwrap(),
-            ),
+            ActionType::Vector2 => Vector2 {
+                action: create_action::<xr::Vector2f>(&set, &xr_friendly_name, localized, paths)
+                    .unwrap(),
+                last_value: (super::AtomicF32::new(0.0), super::AtomicF32::new(0.0)),
+            },
             ActionType::Pose => {
                 let action =
                     create_action::<xr::Posef>(&set, &xr_friendly_name, localized, paths).unwrap();
@@ -337,7 +339,9 @@ fn load_actions(
                     hand,
                 }
             }
-            ActionType::Vibration => continue, // TODO
+            ActionType::Vibration => Haptic(
+                create_action::<xr::Haptic>(&set, &xr_friendly_name, localized, paths).unwrap(),
+            ),
         };
         ret.push(LoadedActionInfo { name: path, action });
     }
@@ -382,48 +386,6 @@ fn path_to_skeleton<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Hand, D::E
     }
 }
 
-//#[derive(Deserialize)]
-//struct PoseActionBinding {
-//    output: String,
-//    #[serde(deserialize_with = "path_to_pose")]
-//    path: (String, Hand, PoseType),
-//}
-//
-//#[derive(Deserialize)]
-//enum PoseType {
-//    Raw,
-//}
-//
-//fn path_to_pose<'de, D: serde::Deserializer<'de>>(
-//    d: D,
-//) -> Result<(String, Hand, PoseType), D::Error> {
-//    let path: String = Deserialize::deserialize(d)?;
-//    // find 3rd slash
-//    let (idx, _) = path
-//        .match_indices('/')
-//        .nth(3)
-//        .ok_or_else(|| D::Error::invalid_value(Unexpected::Str(&path), &"at least 4 slashes"))?;
-//
-//    let hand = match &path[0..idx] {
-//        "/user/hand/left" => Ok(Hand::Left),
-//        "/user/hand/right" => Ok(Hand::Right),
-//        unknown => Err(D::Error::invalid_value(
-//            Unexpected::Str(unknown),
-//            &"/user/hand/left/ or /user/hand/right/",
-//        )),
-//    }?;
-//
-//    let ty = match &path[idx + 1..] {
-//        "pose/raw" => Ok(PoseType::Raw),
-//        other => Err(D::Error::invalid_value(
-//            Unexpected::Str(other),
-//            &"a known pose path",
-//        )),
-//    }?;
-//
-//    Ok((path, hand, ty))
-//}
-
 #[derive(Deserialize)]
 struct ActionBinding {
     mode: ActionMode,
@@ -438,6 +400,8 @@ enum ActionMode {
     Dpad,
     Button,
     Trigger,
+    Trackpad,
+    Joystick,
     None,
     #[serde(untagged)]
     Unknown(String),
@@ -537,7 +501,7 @@ impl<C: openxr_data::Compositor> Input<C> {
         legacy_actions: &super::LegacyActions,
         bindings: &HashMap<String, ActionSetBinding>,
     ) {
-        use super::InputAction::*;
+        use super::ActionData::*;
 
         info!("loading bindings for {}", P::PROFILE_PATH);
         let legal_paths = P::legal_paths();
@@ -574,6 +538,24 @@ impl<C: openxr_data::Compositor> Input<C> {
             if !action_sets.contains_key(action_set_name) {
                 warn!("Action set {action_set_name} missing.");
                 continue;
+            }
+
+            for SimpleActionBinding { output, path } in
+                bindings.haptics.iter().flat_map(|p| p.iter())
+            {
+                let Some(translated) = path_translator(&path) else {
+                    continue;
+                };
+                let xr_path = self.openxr.instance.string_to_path(&translated).unwrap();
+                let action = find_action!(output);
+                let Haptic(action) = &action.action else {
+                    panic!(
+                        "expected haptic action for haptic binding {}, got {}",
+                        translated, output
+                    );
+                };
+
+                xr_bindings.push(xr::Binding::new(action, xr_path));
             }
 
             for SimpleActionBinding { output, path } in bindings.poses.iter().flat_map(|p| p.iter())
@@ -649,7 +631,7 @@ impl<C: openxr_data::Compositor> Input<C> {
                         let action = find_action!(click.output);
                         let binding = match &action.action {
                             Bool(b) => xr::Binding::new(b, xr_path()),
-                            Float { action, .. } => xr::Binding::new(action, xr_path()),
+                            Vector1 { action, .. } => xr::Binding::new(action, xr_path()),
                             _ => {
                                 panic!("Action for {} should be a bool or float", click.output)
                             }
@@ -669,15 +651,31 @@ impl<C: openxr_data::Compositor> Input<C> {
                         let action = find_action!(output);
                         let binding = match &action.action {
                             Bool(b) => xr::Binding::new(b, xr_path()),
-                            Float { action, .. } => xr::Binding::new(action, xr_path()),
+                            Vector1 { action, .. } => xr::Binding::new(action, xr_path()),
                             _ => panic!("Trigger action should be a bool or float"),
                         };
                         trace!("suggesting {translated} for {}", output);
                         xr_bindings.push(binding);
                     }
-                    ActionMode::Dpad => {}
-                    other => {
-                        warn!("unhandled action mode: {other:?}");
+                    ActionMode::Dpad | ActionMode::Joystick => {} // TODO
+                    ActionMode::Trackpad => {
+                        let ActionInput::Vector2 { position } = inputs else {
+                            error!("expected vector2 input for {path} in {action_set_name}, got {inputs:?}");
+                            continue;
+                        };
+
+                        let action = find_action!(position.output);
+                        let binding = match &action.action {
+                            Vector2 { action, .. } => xr::Binding::new(action, xr_path()),
+                            _ => {
+                                panic!("Expected Vector2 action for {}", position.output);
+                            }
+                        };
+                        trace!("suggesting {translated} for {}", position.output);
+                        xr_bindings.push(binding);
+                    }
+                    ActionMode::Unknown(mode) => {
+                        warn!("unhandled action mode: {mode:?}");
                         continue;
                     }
                 }

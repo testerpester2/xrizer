@@ -1,4 +1,4 @@
-use super::{Input, InputAction};
+use super::{Input, ActionData};
 use crate::{
     openxr_data::OpenXrData,
     vr::{self, IVRInput010_Interface},
@@ -18,14 +18,15 @@ static ACTIONS_JSON: &'static CStr = unsafe {
     )
 };
 
-impl std::fmt::Debug for InputAction {
+impl std::fmt::Debug for ActionData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            InputAction::Bool(_) => f.write_str("InputAction::Bool"),
-            InputAction::Float { .. } => f.write_str("InputAction::Float"),
-            InputAction::Vector2(_) => f.write_str("InputAction::Vector2"),
-            InputAction::Pose { .. } => f.write_str("InputAction::Pose"),
-            InputAction::Skeleton { .. } => f.write_str("InputAction::Skeleton"),
+            ActionData::Bool(_) => f.write_str("InputAction::Bool"),
+            ActionData::Vector1 { .. } => f.write_str("InputAction::Float"),
+            ActionData::Vector2{ .. } => f.write_str("InputAction::Vector2"),
+            ActionData::Pose { .. } => f.write_str("InputAction::Pose"),
+            ActionData::Skeleton { .. } => f.write_str("InputAction::Skeleton"),
+            ActionData::Haptic(_) => f.write_str("InputAction::Haptic"),
         }
     }
 }
@@ -124,7 +125,7 @@ impl Fixture {
             .try_get_action(handle)
             .expect("Couldn't find action for handle")
         {
-            InputAction::Bool(a) => a,
+            ActionData::Bool(a) => a,
             other => panic!("Expected boolean action, got {other:?}"),
         };
         action.as_raw()
