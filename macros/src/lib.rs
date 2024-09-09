@@ -144,3 +144,41 @@ pub fn derive_interface_impl(tokens: TokenStream) -> TokenStream {
         }
     }.into()
 }
+
+#[proc_macro]
+pub fn supported_profiles(tokens: TokenStream) -> TokenStream {
+    let types = syn::parse_macro_input!(tokens with Punctuated::<syn::Path, Token![,]>::parse_separated_nonempty);
+    let types = types.iter();
+    let types_with_variants = types.clone().map(|p| (p, &p.segments.last().unwrap().ident));
+    let variants = types_with_variants.clone().map(|(_, variant)| variant);
+    let variants2 = variants.clone();
+    let profile_path_arm = types_with_variants.clone().map(|(ty, variant)| {
+        quote! { Self::#variant => #ty::PROFILE_PATH }
+    });
+
+    quote! {
+        const fn __ensure_implements_interaction_profile<T: InteractionProfile>() {}
+        #(
+            const _: () = __ensure_implements_interaction_profile::<#types>();
+        )*
+        pub enum SupportedProfile {
+            #(#variants),*
+        }
+
+        impl SupportedProfile {
+            const pub fn profile_path(&self) -> &'static str {
+                match self {
+                    #(#profile_path_arm),*
+                }
+            }
+
+            #[inline]
+            pub fn for_each(mut f: impl FnMut(Self)) {
+                #(
+                    f(Self::#variants2);
+                )*
+            }
+        }
+    }
+    .into()
+}

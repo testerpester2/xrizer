@@ -63,8 +63,8 @@ impl<C: openxr_data::Compositor> Input<C> {
             Some(xr::Path::NULL)
         } else {
             match InputSourceKey::from(KeyData::from_ffi(handle)) {
-                x if x == self.left_hand_key => Some(self.openxr.left_hand.path),
-                x if x == self.right_hand_key => Some(self.openxr.right_hand.path),
+                x if x == self.left_hand_key => Some(self.openxr.left_hand.subaction_path),
+                x if x == self.right_hand_key => Some(self.openxr.right_hand.subaction_path),
                 _ => None,
             }
         }
@@ -463,10 +463,10 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
                 left_space,
                 right_space,
             }) => match subaction_path {
-                x if x == self.openxr.left_hand.path => {
+                x if x == self.openxr.left_hand.subaction_path => {
                     (action, left_space, self.left_hand_key.data().as_ffi())
                 }
-                x if x == self.openxr.right_hand.path => {
+                x if x == self.openxr.right_hand.subaction_path => {
                     (action, right_space, self.right_hand_key.data().as_ffi())
                 }
                 _ => unreachable!(),
@@ -908,8 +908,8 @@ impl<C: openxr_data::Compositor> Input<C> {
         };
 
         let hand_path = match hand {
-            Hand::Left => self.openxr.left_hand.path,
-            Hand::Right => self.openxr.right_hand.path,
+            Hand::Left => self.openxr.left_hand.subaction_path,
+            Hand::Right => self.openxr.right_hand.subaction_path,
         };
 
         let data = self.openxr.session_data.get();
@@ -990,8 +990,8 @@ impl<C: openxr_data::Compositor> Input<C> {
                 let legacy = LegacyActions::new(
                     &self.openxr.instance,
                     &data.session,
-                    self.openxr.left_hand.path,
-                    self.openxr.right_hand.path,
+                    self.openxr.left_hand.subaction_path,
+                    self.openxr.right_hand.subaction_path,
                 );
                 setup_legacy_bindings(&self.openxr.instance, &data.session, &legacy);
                 data.input_data
@@ -999,6 +999,48 @@ impl<C: openxr_data::Compositor> Input<C> {
                     .set(legacy)
                     .unwrap_or_else(|_| unreachable!());
             }
+        }
+    }
+
+    pub fn get_controller_string_tracked_property(
+        &self,
+        hand: Hand,
+        property: vr::ETrackedDeviceProperty,
+    ) -> Option<&'static CStr> {
+        use vr::ETrackedDeviceProperty::*;
+
+        match property {
+            Prop_ControllerType_String => {
+                static PATH_MAP: OnceLock<Vec<(xr::Path, &'static CStr)>> = OnceLock::new();
+                let map = PATH_MAP.get_or_init(|| {
+                    let instance = &self.openxr.instance;
+                    let mut v = Vec::new();
+                    let out = &mut v;
+                    action_manifest::for_each_profile! {<'a>(
+                        instance: &'a xr::Instance,
+                        out: &'a mut Vec<(xr::Path, &'static CStr)>
+                    ) {
+                        out.push((
+                            instance.string_to_path(P::PROFILE_PATH).unwrap(),
+                            P::OPENVR_CONTROLLER_TYPE,
+                        ));
+                    }}
+                    v
+                });
+
+                let hand = match hand {
+                    Hand::Left => &self.openxr.left_hand,
+                    Hand::Right => &self.openxr.right_hand,
+                };
+                let profile = hand.interaction_profile.load();
+
+                let controller_type = map
+                    .iter()
+                    .find_map(|(path, ty)| (*path == profile).then_some(*ty));
+
+                controller_type
+            }
+            _ => None,
         }
     }
 
@@ -1018,16 +1060,17 @@ fn setup_legacy_bindings(
 ) {
     debug!("setting up legacy bindings");
 
-    fn suggest_bindings<P: InteractionProfile>(instance: &xr::Instance, actions: &LegacyActions) {
+    action_manifest::for_each_profile! {<'a>(
+        instance: &'a xr::Instance,
+        actions: &'a LegacyActions
+    ) {
         let stp = |s| instance.string_to_path(s).unwrap();
         let bindings = P::legacy_bindings(stp, actions);
         let profile = stp(P::PROFILE_PATH);
         instance
             .suggest_interaction_profile_bindings(profile, &bindings)
             .unwrap();
-    }
-
-    action_manifest::for_each_profile! { suggest_bindings(instance, actions) }
+    }}
 
     session.attach_action_sets(&[&actions.set]).unwrap();
     session

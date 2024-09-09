@@ -343,6 +343,9 @@ impl vr::IVRSystem022_Interface for System {
                 | Prop_ControllerType_String => Some(c"<unknown>"),
                 _ => None,
             },
+            x if Hand::try_from(x).is_ok() => self.input.get().and_then(|i| {
+                i.get_controller_string_tracked_property(Hand::try_from(x).unwrap(), prop)
+            }),
             _ => None,
         };
 

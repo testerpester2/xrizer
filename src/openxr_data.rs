@@ -7,7 +7,7 @@ use log::info;
 use openxr as xr;
 use std::mem::ManuallyDrop;
 use std::sync::{
-    atomic::{AtomicBool, AtomicI64, Ordering},
+    atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
     RwLock,
 };
 
@@ -124,12 +124,13 @@ impl<C: Compositor> OpenXrData<C> {
                 xr::Event::InteractionProfileChanged(_) => {
                     let session = self.session_data.get();
                     for info in [&self.left_hand, &self.right_hand] {
-                        let profile = session
+                        let profile_path = session
                             .session
-                            .current_interaction_profile(info.path)
+                            .current_interaction_profile(info.subaction_path)
                             .unwrap();
 
-                        let profile = match profile {
+                        info.interaction_profile.store(profile_path);
+                        let profile = match profile_path {
                             xr::Path::NULL => {
                                 info.connected.store(false, Ordering::Relaxed);
                                 "<null>".to_owned()
@@ -355,10 +356,22 @@ impl SessionData {
     }
 }
 
+pub struct AtomicPath(AtomicU64);
+impl AtomicPath {
+    pub(crate) fn load(&self) -> xr::Path {
+        xr::Path::from_raw(self.0.load(Ordering::Relaxed))
+    }
+
+    fn store(&self, path: xr::Path) {
+        self.0.store(path.into_raw(), Ordering::Relaxed);
+    }
+}
+
 pub struct HandInfo {
     s: &'static str,
     connected: AtomicBool,
-    pub path: xr::Path,
+    pub subaction_path: xr::Path,
+    pub interaction_profile: AtomicPath,
 }
 
 impl HandInfo {
@@ -371,7 +384,8 @@ impl HandInfo {
         Self {
             s: path,
             connected: false.into(),
-            path: instance.string_to_path(path).unwrap(),
+            subaction_path: instance.string_to_path(path).unwrap(),
+            interaction_profile: AtomicPath(0.into()),
         }
     }
 }

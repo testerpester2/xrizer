@@ -3,10 +3,12 @@ use super::{
     LegacyActions,
 };
 use openxr as xr;
+use std::ffi::CStr;
 
 pub struct SimpleController;
 
 impl InteractionProfile for SimpleController {
+    const OPENVR_CONTROLLER_TYPE: &'static CStr = c"vive_controller"; // meaningless really
     const PROFILE_PATH: &'static str = "/interaction_profiles/khr/simple_controller";
     const TRANSLATE_MAP: &'static [PathTranslation] = &[
         PathTranslation {

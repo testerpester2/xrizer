@@ -13,6 +13,7 @@ use slotmap::SecondaryMap;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
+use std::ffi::CStr;
 
 impl<C: openxr_data::Compositor> Input<C> {
     pub(super) fn load_action_manifest(
@@ -57,8 +58,8 @@ impl<C: openxr_data::Compositor> Input<C> {
             english.as_ref(),
             &sets,
             manifest.actions,
-            self.openxr.left_hand.path,
-            self.openxr.right_hand.path,
+            self.openxr.left_hand.subaction_path,
+            self.openxr.right_hand.subaction_path,
         )?;
         debug!("Loaded {} actions.", actions.len());
 
@@ -68,8 +69,8 @@ impl<C: openxr_data::Compositor> Input<C> {
             super::LegacyActions::new(
                 &self.openxr.instance,
                 &session_data.session,
-                self.openxr.left_hand.path,
-                self.openxr.right_hand.path,
+                self.openxr.left_hand.subaction_path,
+                self.openxr.right_hand.subaction_path,
             )
         });
 
@@ -436,16 +437,30 @@ struct ActionBindingInput {
 }
 
 /// Call a generic function with each supported interaction profile.
-/// All supported interaction profiles should be added here.
+/// The profile is provided as a type parameter named P.
 macro_rules! for_each_profile {
-    ($fn:ident($($arg:expr),*)) => {{
-        $fn::<crate::input::vive_controller::ViveWands>($($arg),*);
-        $fn::<crate::input::simple_controller::SimpleController>($($arg),*);
+    (<
+        $($lifetimes:lifetime),*
+        $(,$generic_name:ident $(: $generic_bound:path)?)*
+    > ($($arg_name:ident: $arg_ty:ty),*) $block:block) => {{
+        struct S<$($lifetimes,)* $($generic_name $(: $generic_bound)?),*> {
+            $(
+                $arg_name: $arg_ty
+            ),*
+        }
+
+        impl<$($lifetimes,)* $($generic_name $(: $generic_bound)?),*> crate::input::action_manifest::ForEachProfile
+            for S<$($lifetimes,)* $($generic_name),*> {
+            fn call<P: InteractionProfile>(&mut self) {
+                let S {
+                    $($arg_name),*
+                } = self;
+                $block
+            }
+        }
+
+        crate::input::action_manifest::for_each_profile_fn(S { $($arg_name),* });
     }};
-    ($pfx:ident.$fn:ident($($arg:expr),*$(,)?)) => {{
-        $pfx.$fn::<crate::input::vive_controller::ViveWands>($($arg),*);
-        $pfx.$fn::<crate::input::simple_controller::SimpleController>($($arg),*);
-    }}
 }
 pub(super) use for_each_profile;
 
@@ -483,14 +498,20 @@ impl<C: openxr_data::Compositor> Input<C> {
                 return;
             };
 
+            let input = self;
+            let bindings = &bindings;
+
             for_each_profile! {
-                self.load_bindings_for_profile(
-                    action_sets,
-                    actions,
-                    legacy_actions,
-                    &bindings,
-                )
-            }
+                <'a, C: openxr_data::Compositor>(
+                    input: &'a Input<C>,
+                    action_sets: &'a HashMap<String, xr::ActionSet>,
+                    actions: &'a [LoadedActionInfo],
+                    legacy_actions: &'a super::LegacyActions,
+                    bindings: &'a HashMap<String, ActionSetBinding>
+                ) {
+                    Input::load_bindings_for_profile::<P>(input, action_sets, actions, legacy_actions, bindings);
+                }
+            };
         }
     }
 
@@ -700,6 +721,7 @@ pub(super) struct PathTranslation {
 
 pub(super) trait InteractionProfile {
     const PROFILE_PATH: &'static str;
+    const OPENVR_CONTROLLER_TYPE: &'static CStr;
     const TRANSLATE_MAP: &'static [PathTranslation];
 
     fn legal_paths() -> Box<[String]>;
@@ -707,4 +729,14 @@ pub(super) trait InteractionProfile {
         string_to_path: impl Fn(&'a str) -> xr::Path,
         actions: &super::LegacyActions,
     ) -> Vec<xr::Binding>;
+}
+
+pub(super) trait ForEachProfile {
+    fn call<T: InteractionProfile>(&mut self);
+}
+
+/// Add all supported interaction profiles here.
+pub(super) fn for_each_profile_fn<F: ForEachProfile>(mut f: F) {
+    f.call::<super::vive_controller::ViveWands>();
+    f.call::<super::simple_controller::SimpleController>();
 }

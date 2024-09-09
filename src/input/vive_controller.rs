@@ -3,10 +3,12 @@ use super::{
     LegacyActions,
 };
 use openxr as xr;
+use std::ffi::CStr;
 
 pub struct ViveWands;
 
 impl InteractionProfile for ViveWands {
+    const OPENVR_CONTROLLER_TYPE: &'static CStr = c"vive_controller";
     const PROFILE_PATH: &'static str = "/interaction_profiles/htc/vive_controller";
     const TRANSLATE_MAP: &'static [PathTranslation] = &[
         PathTranslation {
