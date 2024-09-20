@@ -2,10 +2,10 @@ pub mod vulkan;
 use crossbeam_utils::atomic::AtomicCell;
 use openxr_sys as xr;
 use paste::paste;
-use std::ffi::{c_char, CStr};
+use std::ffi::{c_char, CStr, CString};
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
-    mpsc, Arc, OnceLock, Weak,
+    mpsc, Arc, OnceLock, RwLock, Weak,
 };
 
 #[derive(Clone, Copy)]
@@ -13,6 +13,7 @@ pub enum ActionState {
     Bool(bool),
     Pose,
     Float(f32),
+    Vector2(f32, f32),
 }
 pub fn set_action_state(action: xr::Action, state: ActionState) {
     let action = Action::from_xr(action);
@@ -163,7 +164,7 @@ pub extern "system" fn get_instance_proc_addr(
                 (GetReferenceSpaceBoundsRect),
                 GetActionStateBoolean,
                 GetActionStateFloat,
-                (GetActionStateVector2f),
+                GetActionStateVector2f,
                 (GetActionStatePose),
                 CreateActionSet,
                 DestroyActionSet,
@@ -241,14 +242,13 @@ struct Session {
 #[repr(C)]
 struct ActionSet {
     debug: u64,
-    pending_actions: AtomicCell<Option<mpsc::Receiver<Arc<Action>>>>,
-    action_sender: mpsc::Sender<Arc<Action>>,
+    pending_actions: RwLock<Vec<Arc<Action>>>,
     actions: OnceLock<Vec<Arc<Action>>>,
     active: AtomicBool,
 }
 impl ActionSet {
     fn make_immutable(&self) {
-        let actions = self.pending_actions.take().unwrap().try_iter().collect();
+        let actions = std::mem::take(&mut *self.pending_actions.write().unwrap());
         self.actions
             .set(actions)
             .unwrap_or_else(|_| panic!("Action set already immutable"));
@@ -258,6 +258,8 @@ impl ActionSet {
 #[repr(C)]
 struct Action {
     debug: u64,
+    name: CString,
+    localized_name: CString,
     state: AtomicCell<ActionState>,
     pending_state: AtomicCell<Option<ActionState>>,
 }
@@ -352,12 +354,10 @@ extern "system" fn create_action_set(
     _: *const xr::ActionSetCreateInfo,
     set: *mut xr::ActionSet,
 ) -> xr::Result {
-    let (tx, rx) = mpsc::channel();
     let s = ActionSet {
         debug: ActionSet::DEBUG_VAL,
         actions: OnceLock::new(),
-        action_sender: tx,
-        pending_actions: Some(rx).into(),
+        pending_actions: RwLock::default(),
         active: false.into(),
     };
 
@@ -376,20 +376,65 @@ extern "system" fn create_action(
     info: *const xr::ActionCreateInfo,
     action: *mut xr::Action,
 ) -> xr::Result {
+    let set = ActionSet::from_xr(set);
+    if set.actions.get().is_some() {
+        return xr::Result::ERROR_ACTIONSETS_ALREADY_ATTACHED;
+    }
+
+    let info = unsafe { info.as_ref().unwrap() };
+    let name = CStr::from_bytes_until_nul(unsafe {
+        std::slice::from_raw_parts(info.action_name.as_ptr() as _, info.action_name.len())
+    })
+    .unwrap();
+    for b in name.to_bytes().iter().copied() {
+        if !b.is_ascii_alphanumeric() && b != b'-' && b != b'.' && b != b'_' {
+            println!(
+                "bad character ({:?}) in action name {name:?}",
+                std::str::from_utf8(&[b])
+            );
+            return xr::Result::ERROR_PATH_FORMAT_INVALID;
+        }
+    }
+    let localized_name = CStr::from_bytes_until_nul(unsafe {
+        std::slice::from_raw_parts(
+            info.localized_action_name.as_ptr() as _,
+            info.localized_action_name.len(),
+        )
+    })
+    .unwrap();
+
+    for action in set.pending_actions.read().unwrap().iter() {
+        if action.name.as_c_str() == name {
+            return xr::Result::ERROR_NAME_DUPLICATED;
+        }
+        if action.localized_name.as_c_str() == localized_name {
+            return xr::Result::ERROR_LOCALIZED_NAME_DUPLICATED;
+        }
+    }
+
     let a = Arc::new(Action {
         debug: Action::DEBUG_VAL,
-        state: match unsafe { (*info).action_type } {
+        name: name.to_owned(),
+        localized_name: CStr::from_bytes_until_nul(unsafe {
+            std::slice::from_raw_parts(
+                info.localized_action_name.as_ptr() as _,
+                info.localized_action_name.len(),
+            )
+        })
+        .unwrap()
+        .to_owned(),
+        state: match info.action_type {
             xr::ActionType::BOOLEAN_INPUT => ActionState::Bool(false),
             xr::ActionType::POSE_INPUT => ActionState::Pose,
             xr::ActionType::FLOAT_INPUT => ActionState::Float(0.0),
+            xr::ActionType::VECTOR2F_INPUT => ActionState::Vector2(0.0, 0.0),
             other => unimplemented!("unhandled action type: {other:?}"),
         }
         .into(),
         pending_state: None.into(),
     });
-    let set = ActionSet::from_xr(set);
-    set.action_sender.send(a.clone()).unwrap();
 
+    set.pending_actions.write().unwrap().push(a.clone());
     unsafe {
         *action = xr::Action::from_raw(Arc::into_raw(a) as u64);
     }
@@ -638,6 +683,31 @@ extern "system" fn get_action_state_float(
         state.is_active = false.into();
         state.current_state = 0.0;
     }
+    xr::Result::SUCCESS
+}
+
+extern "system" fn get_action_state_vector2f(
+    session: xr::Session,
+    info: *const xr::ActionStateGetInfo,
+    state: *mut xr::ActionStateVector2f,
+) -> xr::Result {
+    let session = Session::from_xr(session);
+    let Some((set, action)) = get_action_if_attached(&session, info) else {
+        return xr::Result::ERROR_ACTIONSET_NOT_ATTACHED;
+    };
+
+    let ActionState::Vector2(x, y) = action.state.load() else {
+        return xr::Result::ERROR_ACTION_TYPE_MISMATCH;
+    };
+    let state = unsafe { state.as_mut().unwrap() };
+    if set.active.load(Ordering::Relaxed) {
+        state.is_active = true.into();
+        state.current_state = xr::Vector2f { x, y };
+    } else {
+        state.is_active = false.into();
+        state.current_state = Default::default();
+    }
+
     xr::Result::SUCCESS
 }
 

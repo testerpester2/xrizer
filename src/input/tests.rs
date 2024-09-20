@@ -1,4 +1,4 @@
-use super::{Input, ActionData};
+use super::{ActionData, Input};
 use crate::{
     openxr_data::OpenXrData,
     vr::{self, IVRInput010_Interface},
@@ -8,13 +8,9 @@ use std::ffi::CStr;
 use std::sync::Arc;
 use vr::EVRInputError::*;
 
-static ACTIONS_JSON: &'static CStr = unsafe {
+static ACTIONS_JSONS_DIR: &'static CStr = unsafe {
     CStr::from_bytes_with_nul_unchecked(
-        concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/input_data/actions.json\0"
-        )
-        .as_bytes(),
+        concat!(env!("CARGO_MANIFEST_DIR"), "/tests/input_data/\0").as_bytes(),
     )
 };
 
@@ -23,7 +19,7 @@ impl std::fmt::Debug for ActionData {
         match self {
             ActionData::Bool(_) => f.write_str("InputAction::Bool"),
             ActionData::Vector1 { .. } => f.write_str("InputAction::Float"),
-            ActionData::Vector2{ .. } => f.write_str("InputAction::Vector2"),
+            ActionData::Vector2 { .. } => f.write_str("InputAction::Vector2"),
             ActionData::Pose { .. } => f.write_str("InputAction::Pose"),
             ActionData::Skeleton { .. } => f.write_str("InputAction::Skeleton"),
             ActionData::Haptic(_) => f.write_str("InputAction::Haptic"),
@@ -96,9 +92,10 @@ impl Fixture {
         handle
     }
 
-    fn load_actions(&self) {
+    fn load_actions(&self, file: &CStr) {
+        let path = &[ACTIONS_JSONS_DIR.to_bytes(), file.to_bytes_with_nul()].concat();
         assert_eq!(
-            self.input.SetActionManifestPath(ACTIONS_JSON.as_ptr()),
+            self.input.SetActionManifestPath(path.as_ptr() as _),
             VRInputError_None
         );
     }
@@ -128,7 +125,26 @@ impl Fixture {
             ActionData::Bool(a) => a,
             other => panic!("Expected boolean action, got {other:?}"),
         };
-        action.as_raw()
+        action.action.as_raw()
+    }
+
+    fn get_bool_state(
+        &self,
+        handle: vr::VRActionHandle_t,
+    ) -> Result<vr::InputDigitalActionData_t, vr::EVRInputError> {
+        let mut state = Default::default();
+        let err = self.input.GetDigitalActionData(
+            handle,
+            &mut state,
+            std::mem::size_of::<vr::InputDigitalActionData_t>() as u32,
+            0,
+        );
+
+        if err != VRInputError_None {
+            Err(err)
+        } else {
+            Ok(state)
+        }
     }
 }
 
@@ -222,7 +238,7 @@ fn legacy_input() {
 #[test]
 fn unknown_handles() {
     let f = Fixture::new();
-    f.load_actions();
+    f.load_actions(c"actions.json");
 
     let handle = f.get_action_handle(c"/actions/set1/in/fakeaction");
     let mut state = Default::default();
@@ -244,7 +260,7 @@ fn handles_dont_change_after_load() {
     let set1 = f.get_action_set_handle(c"/actions/set1");
     let boolact = f.get_action_handle(c"/actions/set1/in/boolact");
 
-    f.load_actions();
+    f.load_actions(c"actions.json");
 
     let set_load = f.get_action_set_handle(c"/actions/set1");
     assert_eq!(set_load, set1);
@@ -259,50 +275,26 @@ fn input_state_flow() {
     let set1 = f.get_action_set_handle(c"/actions/set1");
     let boolact = f.get_action_handle(c"/actions/set1/in/boolact");
 
-    f.load_actions();
+    f.load_actions(c"actions.json");
     f.sync(vr::VRActiveActionSet_t {
         ulActionSet: set1,
         ..Default::default()
     });
 
-    let mut state = vr::InputDigitalActionData_t::default();
-    assert_eq!(
-        f.input.GetDigitalActionData(
-            boolact,
-            &mut state,
-            std::mem::size_of::<vr::InputDigitalActionData_t>() as u32,
-            0
-        ),
-        VRInputError_None
-    );
+    let state = f.get_bool_state(boolact).unwrap();
     assert_eq!(state.bState, false);
 
     fakexr::set_action_state(f.get_bool_action(boolact), fakexr::ActionState::Bool(true));
 
-    assert_eq!(
-        f.input.GetDigitalActionData(
-            boolact,
-            &mut state,
-            std::mem::size_of::<vr::InputDigitalActionData_t>() as u32,
-            0
-        ),
-        VRInputError_None
-    );
+    let state = f.get_bool_state(boolact).unwrap();
     assert_eq!(state.bState, false);
 
     f.sync(vr::VRActiveActionSet_t {
         ulActionSet: set1,
         ..Default::default()
     });
-    assert_eq!(
-        f.input.GetDigitalActionData(
-            boolact,
-            &mut state,
-            std::mem::size_of::<vr::InputDigitalActionData_t>() as u32,
-            0
-        ),
-        VRInputError_None
-    );
+
+    let state = f.get_bool_state(boolact).unwrap();
     assert_eq!(state.bState, true);
 }
 
@@ -313,7 +305,7 @@ fn reload_manifest_on_session_restart() {
     let set1 = f.get_action_set_handle(c"/actions/set1");
     let boolact = f.get_action_handle(c"/actions/set1/in/boolact");
 
-    f.load_actions();
+    f.load_actions(c"actions.json");
     f.input.openxr.restart_session();
 
     fakexr::set_action_state(f.get_bool_action(boolact), fakexr::ActionState::Bool(true));
@@ -322,12 +314,80 @@ fn reload_manifest_on_session_restart() {
         ..Default::default()
     });
 
-    let mut state = Default::default();
-    assert_eq!(
-        f.input
-            .GetDigitalActionData(boolact, &mut state, std::mem::size_of_val(&state) as u32, 0),
-        VRInputError_None
-    );
+    let state = f.get_bool_state(boolact).unwrap();
     assert_eq!(state.bState, true);
     assert_eq!(state.bActive, true);
+}
+
+macro_rules! get_dpad_action {
+    ($fixture:expr, $handle:expr, $dpad_data:ident) => {
+        let data = $fixture.input.openxr.session_data.get();
+        let actions = data.input_data.get_loaded_actions().unwrap();
+        let super::ActionData::Bool(super::BoolActionData { dpad_data, .. }) =
+            actions.try_get_action($handle).unwrap()
+        else {
+            panic!("should be bool action");
+        };
+
+        let $dpad_data = dpad_data.as_ref().unwrap();
+    };
+}
+
+#[test]
+fn dpad_input() {
+    let f = Fixture::new();
+
+    let set1 = f.get_action_set_handle(c"/actions/set1");
+    let boolact = f.get_action_handle(c"/actions/set1/in/boolact");
+
+    f.load_actions(c"actions_dpad.json");
+    f.input.openxr.restart_session();
+
+    get_dpad_action!(f, boolact, dpad_data);
+
+    fakexr::set_action_state(
+        dpad_data.parent.as_raw(),
+        fakexr::ActionState::Vector2(0.0, 0.5),
+    );
+    fakexr::set_action_state(
+        dpad_data.click_or_touch.as_ref().unwrap().as_raw(),
+        fakexr::ActionState::Bool(true),
+    );
+
+    f.sync(vr::VRActiveActionSet_t {
+        ulActionSet: set1,
+        ..Default::default()
+    });
+
+    let state = f.get_bool_state(boolact).unwrap();
+    assert_eq!(state.bState, true);
+    assert_eq!(state.bActive, true);
+
+    fakexr::set_action_state(
+        dpad_data.parent.as_raw(),
+        fakexr::ActionState::Vector2(0.5, 0.0),
+    );
+    f.sync(vr::VRActiveActionSet_t {
+        ulActionSet: set1,
+        ..Default::default()
+    });
+
+    let state = f.get_bool_state(boolact).unwrap();
+    assert_eq!(state.bState, false);
+    assert_eq!(state.bActive, true);
+}
+
+#[test]
+fn dpad_input_different_sets_have_different_actions() {
+    let f = Fixture::new();
+
+    let boolact_set1 = f.get_action_handle(c"/actions/set1/in/boolact");
+    let boolact_set2 = f.get_action_handle(c"/actions/set2/in/boolact");
+
+    f.load_actions(c"actions_dpad.json");
+
+    get_dpad_action!(f, boolact_set1, set1_dpad);
+    get_dpad_action!(f, boolact_set2, set2_dpad);
+
+    assert_ne!(set1_dpad.parent.as_raw(), set2_dpad.parent.as_raw());
 }

@@ -222,11 +222,6 @@ impl SessionReadGuard {
     pub fn get(&self) -> std::sync::RwLockReadGuard<'_, ManuallyDrop<SessionData>> {
         self.0.read().unwrap()
     }
-
-    #[cfg(test)]
-    pub fn get_mut(&self) -> std::sync::RwLockWriteGuard<'_, ManuallyDrop<SessionData>> {
-        self.0.write().unwrap()
-    }
 }
 
 pub struct SessionData {

@@ -14,6 +14,7 @@ use action_manifest::InteractionProfile;
 use log::{debug, info, trace, warn};
 use openxr as xr;
 use slotmap::{new_key_type, Key, KeyData, SecondaryMap, SlotMap};
+use std::f32::consts::PI;
 use std::ffi::{c_char, CStr, CString};
 use std::path::PathBuf;
 use std::sync::{
@@ -85,7 +86,7 @@ impl InputSessionData {
 }
 
 enum ActionData {
-    Bool(xr::Action<bool>),
+    Bool(BoolActionData),
     Vector1 {
         action: xr::Action<f32>,
         last_value: AtomicF32,
@@ -105,6 +106,90 @@ enum ActionData {
         hand: Hand,
     },
     Haptic(xr::Action<xr::Haptic>),
+}
+
+#[derive(Debug)]
+enum DpadDirection {
+    North,
+    East,
+    South,
+    West,
+    Center,
+}
+
+struct BoolActionData {
+    action: xr::Action<bool>,
+    dpad_data: Option<DpadData>,
+}
+
+struct DpadData {
+    parent: xr::Action<xr::Vector2f>,
+    click_or_touch: Option<xr::Action<bool>>,
+    direction: DpadDirection,
+}
+
+impl BoolActionData {
+    fn state<G>(
+        &self,
+        session: &xr::Session<G>,
+        subaction_path: xr::Path,
+    ) -> xr::Result<xr::ActionState<bool>> {
+        let Some(DpadData {
+            parent,
+            click_or_touch,
+            direction,
+        }) = &self.dpad_data
+        else {
+            // non dpad action - just use boolean
+            return self.action.state(session, subaction_path);
+        };
+        let parent_state = parent.state(session, xr::Path::NULL)?;
+        let mut ret_state = xr::ActionState {
+            current_state: false,
+            last_change_time: parent_state.last_change_time, // TODO: this is wrong
+            changed_since_last_sync: parent_state.changed_since_last_sync, // TODO: this is wrong
+            is_active: parent_state.is_active,
+        };
+
+        let active = click_or_touch
+            .as_ref()
+            .map(|a| a.state(&session, xr::Path::NULL).map(|s| s.current_state))
+            .unwrap_or(Ok(true))?;
+
+        if !active {
+            return Ok(ret_state);
+        }
+
+        // convert to polar coordinates
+        let xr::Vector2f { x, y } = parent_state.current_state;
+        let radius = x.hypot(y);
+        let angle = y.atan2(x);
+
+        // arbitrary
+        const CENTER_ZONE: f32 = 0.5;
+
+        // pi/2 wedges, no overlap
+        let in_bounds = match direction {
+            DpadDirection::North => {
+                radius >= CENTER_ZONE && (PI / 4.0..=3.0 * PI / 4.0).contains(&angle)
+            }
+            DpadDirection::East => radius >= CENTER_ZONE && (-PI / 4.0..=PI / 4.0).contains(&angle),
+            DpadDirection::South => {
+                radius >= CENTER_ZONE && (-3.0 * PI / 4.0..=-PI / 4.0).contains(&angle)
+            }
+            // west section is disjoint with atan2
+            DpadDirection::West => {
+                radius >= CENTER_ZONE
+                    && ((3.0 * PI / 4.0..=PI).contains(&angle)
+                        || (-PI..=-3.0 * PI / 4.0).contains(&angle))
+            }
+            DpadDirection::Center => radius < CENTER_ZONE,
+        };
+
+        ret_state.current_state = in_bounds;
+
+        Ok(ret_state)
+    }
 }
 
 macro_rules! get_action_from_handle {
@@ -1147,6 +1232,7 @@ impl LegacyActions {
     }
 }
 
+#[derive(Default)]
 struct AtomicF32(AtomicU32);
 impl AtomicF32 {
     fn new(value: f32) -> Self {
@@ -1159,5 +1245,11 @@ impl AtomicF32 {
 
     fn store(&self, value: f32) {
         self.0.store(value.to_bits(), Ordering::Relaxed)
+    }
+}
+
+impl From<f32> for AtomicF32 {
+    fn from(value: f32) -> Self {
+        Self::new(value)
     }
 }

@@ -149,7 +149,9 @@ pub fn derive_interface_impl(tokens: TokenStream) -> TokenStream {
 pub fn supported_profiles(tokens: TokenStream) -> TokenStream {
     let types = syn::parse_macro_input!(tokens with Punctuated::<syn::Path, Token![,]>::parse_separated_nonempty);
     let types = types.iter();
-    let types_with_variants = types.clone().map(|p| (p, &p.segments.last().unwrap().ident));
+    let types_with_variants = types
+        .clone()
+        .map(|p| (p, &p.segments.last().unwrap().ident));
     let variants = types_with_variants.clone().map(|(_, variant)| variant);
     let variants2 = variants.clone();
     let profile_path_arm = types_with_variants.clone().map(|(ty, variant)| {
