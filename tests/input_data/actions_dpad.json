@@ -23,7 +23,7 @@
 	],
 	"default_bindings": [
 		{
-			"binding_url": "wands.json",
+			"binding_url": "wands_dpad.json",
 			"controller_type": "vive_controller"
 		}
 	],

@@ -80,3 +80,65 @@ impl InteractionProfile for ViveWands {
         ret
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{xr, InteractionProfile, ViveWands};
+    use crate::input::tests::Fixture;
+
+    #[test]
+    fn verify_bindings() {
+        let f = Fixture::new();
+        f.load_actions(c"actions.json");
+        f.verify_bindings::<bool>(
+            ViveWands::PROFILE_PATH,
+            c"/actions/set1/in/boolact",
+            [
+                "/user/hand/left/input/squeeze/click".into(),
+                "/user/hand/right/input/squeeze/click".into(),
+                "/user/hand/left/input/menu/click".into(),
+                "/user/hand/right/input/menu/click".into(),
+                // Suggesting float paths for boolean inputs is legal
+                "/user/hand/left/input/trigger/value".into(),
+                "/user/hand/right/input/trigger/value".into(),
+                // TODO: binding for trackpad click?
+            ],
+        );
+
+        f.verify_bindings::<f32>(
+            ViveWands::PROFILE_PATH,
+            c"/actions/set1/in/vec1act",
+            [
+                "/user/hand/left/input/trigger/value".into(),
+                "/user/hand/right/input/trigger/value".into(),
+            ],
+        );
+
+        f.verify_bindings::<xr::Vector2f>(
+            ViveWands::PROFILE_PATH,
+            c"/actions/set1/in/vec2act",
+            [
+                "/user/hand/left/input/trackpad".into(),
+                "/user/hand/right/input/trackpad".into(),
+            ],
+        );
+
+        f.verify_bindings::<xr::Haptic>(
+            ViveWands::PROFILE_PATH,
+            c"/actions/set1/in/vib",
+            [
+                "/user/hand/left/output/haptic".into(),
+                "/user/hand/right/output/haptic".into(),
+            ],
+        );
+
+        f.verify_bindings::<xr::Posef>(
+            ViveWands::PROFILE_PATH,
+            c"/actions/set1/in/pose",
+            [
+                "/user/hand/left/input/grip/pose".into(),
+                "/user/hand/right/input/grip/pose".into(),
+            ],
+        );
+    }
+}

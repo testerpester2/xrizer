@@ -16,11 +16,41 @@
 			"type": "boolean"
 		},
 		{
-			"name": "/actions/set1/in/vecact",
+			"name": "/actions/set1/in/vec1act",
 			"requirement": "optional",
 			"type": "vector1"
+		},
+		{
+			"name": "/actions/set1/in/vec2act",
+			"requirement": "optional",
+			"type": "vector2"
+		},
+		{
+			"name": "/actions/set1/in/pose",
+			"requirement": "optional",
+			"type": "pose"
+		},
+		{
+			"name": "/actions/set1/in/skellyl",
+			"type": "skeleton",
+			"skeleton": "/skeleton/hand/left"
+		},
+		{
+			"name": "/actions/set1/in/skellyr",
+			"type": "skeleton",
+			"skeleton": "/skeleton/hand/right"
+		},
+		{
+			"name": "/actions/set1/in/vib",
+			"requirement": "mandatory",
+			"type": "vibration"
 		}
 	],
-	"default_bindings": [],
+	"default_bindings": [
+		{
+			"binding_url": "wands.json",
+			"controller_type": "vive_controller"
+		}
+	],
 	"localization": []
 }

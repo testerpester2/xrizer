@@ -4,6 +4,7 @@ use crate::{
     vr::{self, IVRInput010_Interface},
 };
 use openxr as xr;
+use std::collections::HashSet;
 use std::ffi::CStr;
 use std::sync::Arc;
 use vr::EVRInputError::*;
@@ -27,7 +28,7 @@ impl std::fmt::Debug for ActionData {
     }
 }
 
-struct FakeCompositor(crate::vulkan::VulkanData);
+pub(super) struct FakeCompositor(crate::vulkan::VulkanData);
 impl crate::InterfaceImpl for FakeCompositor {
     fn get_version(_: &CStr) -> Option<Box<dyn FnOnce(&Arc<Self>) -> *mut std::ffi::c_void>> {
         None
@@ -49,13 +50,36 @@ impl crate::openxr_data::Compositor for FakeCompositor {
     }
 }
 
-struct Fixture {
-    input: Arc<Input<FakeCompositor>>,
+pub(super) struct Fixture {
+    pub input: Arc<Input<FakeCompositor>>,
     _comp: Arc<FakeCompositor>,
 }
 
+pub(super) trait ActionType: xr::ActionTy {
+    fn get_xr_action(data: &ActionData) -> Result<xr::sys::Action, String>;
+}
+
+macro_rules! impl_action_type {
+    ($ty:ty, $err_ty:literal, $pattern:pat => $extract_action:expr) => {
+        impl ActionType for $ty {
+            fn get_xr_action(data: &ActionData) -> Result<xr::sys::Action, String> {
+                match data {
+                    $pattern => Ok($extract_action),
+                    other => Err(format!("Expected {} action, got {other:?}", $err_ty)),
+                }
+            }
+        }
+    };
+}
+
+impl_action_type!(bool, "boolean", ActionData::Bool(a) => a.action.as_raw());
+impl_action_type!(f32, "vector1", ActionData::Vector1{ action, .. } => action.as_raw());
+impl_action_type!(xr::Vector2f, "vector2", ActionData::Vector2{ action, .. } => action.as_raw());
+impl_action_type!(xr::Haptic, "haptic", ActionData::Haptic(a) => a.as_raw());
+impl_action_type!(xr::Posef, "pose", ActionData::Pose { action, .. } => action.as_raw());
+
 impl Fixture {
-    fn new() -> Self {
+    pub fn new() -> Self {
         crate::init_logging();
         let xr = Arc::new(OpenXrData::new(&crate::clientcore::Injector::default()).unwrap());
         let comp = Arc::new(FakeCompositor(crate::vulkan::VulkanData::new_temporary(
@@ -72,6 +96,63 @@ impl Fixture {
         ret
     }
 
+    pub fn load_actions(&self, file: &CStr) {
+        let path = &[ACTIONS_JSONS_DIR.to_bytes(), file.to_bytes_with_nul()].concat();
+        assert_eq!(
+            self.input.SetActionManifestPath(path.as_ptr() as _),
+            VRInputError_None
+        );
+    }
+
+    #[track_caller]
+    pub fn verify_bindings<T: ActionType>(
+        &self,
+        interaction_profile: &str,
+        action_name: &CStr,
+        expected_bindings: impl Into<HashSet<String>>,
+    ) {
+        let mut expected_bindings = expected_bindings.into();
+        let profile = self
+            .input
+            .openxr
+            .instance
+            .string_to_path(interaction_profile)
+            .unwrap();
+
+        let handle = self.get_action_handle(action_name);
+        let action = self.get_action::<T>(handle);
+
+        let bindings = fakexr::get_suggested_bindings(action, profile);
+
+        let mut found_bindings = Vec::new();
+
+        for binding in bindings {
+            assert!(
+                expected_bindings.remove(binding.as_str()) || found_bindings.contains(&binding),
+                concat!(
+                    "Unexpected binding {} for {} action {:?}\n",
+                    "found bindings: {:#?}\n",
+                    "remaining bindings: {:#?}"
+                ),
+                binding,
+                std::any::type_name::<T>(),
+                action_name,
+                found_bindings,
+                expected_bindings,
+            );
+
+            found_bindings.push(binding);
+        }
+
+        assert!(
+            expected_bindings.is_empty(),
+            "Missing expected bindings for {} action {action_name:?}: {expected_bindings:#?}",
+            std::any::type_name::<T>(),
+        );
+    }
+}
+
+impl Fixture {
     fn get_action_handle(&self, name: &CStr) -> vr::VRActionHandle_t {
         let mut handle = 0;
         assert_eq!(
@@ -92,14 +173,6 @@ impl Fixture {
         handle
     }
 
-    fn load_actions(&self, file: &CStr) {
-        let path = &[ACTIONS_JSONS_DIR.to_bytes(), file.to_bytes_with_nul()].concat();
-        assert_eq!(
-            self.input.SetActionManifestPath(path.as_ptr() as _),
-            VRInputError_None
-        );
-    }
-
     fn sync(&self, mut active: vr::VRActiveActionSet_t) {
         assert_eq!(
             self.input.UpdateActionState(
@@ -112,20 +185,17 @@ impl Fixture {
     }
 
     #[track_caller]
-    fn get_bool_action(&self, handle: vr::VRActionHandle_t) -> xr::sys::Action {
+    fn get_action<T: ActionType>(&self, handle: vr::VRActionHandle_t) -> xr::sys::Action {
         let data = self.input.openxr.session_data.get();
         let actions = data
             .input_data
             .get_loaded_actions()
             .expect("Actions aren't loaded");
-        let action = match actions
+        let action = actions
             .try_get_action(handle)
-            .expect("Couldn't find action for handle")
-        {
-            ActionData::Bool(a) => a,
-            other => panic!("Expected boolean action, got {other:?}"),
-        };
-        action.action.as_raw()
+            .expect("Couldn't find action for handle");
+
+        T::get_xr_action(action).expect("Couldn't get OpenXR handle for action")
     }
 
     fn get_bool_state(
@@ -276,6 +346,17 @@ fn input_state_flow() {
     let boolact = f.get_action_handle(c"/actions/set1/in/boolact");
 
     f.load_actions(c"actions.json");
+
+    assert!(f
+        .input
+        .openxr
+        .session_data
+        .get()
+        .input_data
+        .legacy_actions
+        .get()
+        .is_some());
+
     f.sync(vr::VRActiveActionSet_t {
         ulActionSet: set1,
         ..Default::default()
@@ -284,7 +365,10 @@ fn input_state_flow() {
     let state = f.get_bool_state(boolact).unwrap();
     assert_eq!(state.bState, false);
 
-    fakexr::set_action_state(f.get_bool_action(boolact), fakexr::ActionState::Bool(true));
+    fakexr::set_action_state(
+        f.get_action::<bool>(boolact),
+        fakexr::ActionState::Bool(true),
+    );
 
     let state = f.get_bool_state(boolact).unwrap();
     assert_eq!(state.bState, false);
@@ -308,7 +392,10 @@ fn reload_manifest_on_session_restart() {
     f.load_actions(c"actions.json");
     f.input.openxr.restart_session();
 
-    fakexr::set_action_state(f.get_bool_action(boolact), fakexr::ActionState::Bool(true));
+    fakexr::set_action_state(
+        f.get_action::<bool>(boolact),
+        fakexr::ActionState::Bool(true),
+    );
     f.sync(vr::VRActiveActionSet_t {
         ulActionSet: set1,
         ..Default::default()

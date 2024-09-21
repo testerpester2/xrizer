@@ -133,7 +133,11 @@ impl<C: openxr_data::Compositor> Input<C> {
     }
 }
 
-// https://github.com/ValveSoftware/openvr/wiki/Action-manifest
+/**
+ * Structure for action manifests.
+ * https://github.com/ValveSoftware/openvr/wiki/Action-manifest
+ */
+
 #[derive(Deserialize)]
 struct ActionManifest {
     default_bindings: Vec<DefaultBindings>,
@@ -326,7 +330,7 @@ fn load_actions(
                 }
             }
             ActionType::Skeleton => {
-                let hand = skeleton.unwrap();
+                let hand = skeleton.expect("Got skeleton action without path");
                 let action =
                     create_action::<xr::Posef>(&set, &xr_friendly_name, localized, paths).unwrap();
                 let space = action
@@ -354,6 +358,10 @@ fn load_actions(
     }
     Ok(ret)
 }
+
+/**
+ * Structure for binding files
+ */
 
 #[derive(Deserialize)]
 struct Bindings {
@@ -388,7 +396,7 @@ fn path_to_skeleton<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Hand, D::E
         "/user/hand/right/input/skeleton/right" => Ok(Hand::Right),
         other => Err(D::Error::invalid_value(
             Unexpected::Str(other),
-            &"left or right hand skeleton path",
+            &"/user/hand/left/input/skeleton/left or /user/hand/right/input/skeleton/right",
         )),
     }
 }
@@ -454,27 +462,27 @@ enum ActionMode {
 #[serde(untagged)]
 enum ActionInput {
     Button {
-        click: ActionBindingInput,
+        click: ActionBindingOutput,
     },
     Trigger {
-        pull: ActionBindingInput,
+        pull: ActionBindingOutput,
     },
     Vector2 {
-        position: ActionBindingInput,
+        position: ActionBindingOutput,
     },
     Dpad {
-        east: Option<ActionBindingInput>,
-        south: Option<ActionBindingInput>,
-        north: Option<ActionBindingInput>,
-        west: Option<ActionBindingInput>,
-        center: Option<ActionBindingInput>,
+        east: Option<ActionBindingOutput>,
+        south: Option<ActionBindingOutput>,
+        north: Option<ActionBindingOutput>,
+        west: Option<ActionBindingOutput>,
+        center: Option<ActionBindingOutput>,
     },
     #[allow(dead_code)]
     Unknown(serde_json::Value),
 }
 
 #[derive(Deserialize, Debug)]
-struct ActionBindingInput {
+struct ActionBindingOutput {
     output: String,
 }
 
@@ -681,7 +689,7 @@ fn handle_dpad_action(
     // Workaround weird closure lifetime quirks.
     const fn constrain<F>(f: F) -> F
     where
-        F: for<'a> Fn(&'a Option<ActionBindingInput>, super::DpadDirection) -> Option<&'a str>,
+        F: for<'a> Fn(&'a Option<ActionBindingOutput>, super::DpadDirection) -> Option<&'a str>,
     {
         f
     }
@@ -841,7 +849,7 @@ fn handle_sources(
             ActionMode::None => unreachable!(),
             ActionMode::Button => {
                 let ActionInput::Button {
-                    click: ActionBindingInput { output },
+                    click: ActionBindingOutput { output },
                 } = inputs
                 else {
                     error!("Input for button action for {path} in {action_set_name} is wrong.");
@@ -886,7 +894,7 @@ fn handle_sources(
             }
             ActionMode::Trackpad | ActionMode::Joystick => {
                 let ActionInput::Vector2 {
-                    position: ActionBindingInput { output },
+                    position: ActionBindingOutput { output },
                 } = inputs
                 else {
                     error!(

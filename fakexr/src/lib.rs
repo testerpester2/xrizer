@@ -2,10 +2,11 @@ pub mod vulkan;
 use crossbeam_utils::atomic::AtomicCell;
 use openxr_sys as xr;
 use paste::paste;
+use std::collections::HashMap;
 use std::ffi::{c_char, CStr, CString};
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
-    mpsc, Arc, OnceLock, RwLock, Weak,
+    mpsc, Arc, Mutex, OnceLock, RwLock, Weak,
 };
 
 #[derive(Clone, Copy)]
@@ -14,12 +15,27 @@ pub enum ActionState {
     Pose,
     Float(f32),
     Vector2(f32, f32),
+    Haptic,
 }
+
 pub fn set_action_state(action: xr::Action, state: ActionState) {
     let action = Action::from_xr(action);
     let s = action.state.load();
     assert_eq!(std::mem::discriminant(&state), std::mem::discriminant(&s));
     action.pending_state.store(Some(state));
+}
+
+pub fn get_suggested_bindings(action: xr::Action, profile: xr::Path) -> Vec<String> {
+    let action = Action::from_xr(action);
+    let path = Path::from_xr(profile);
+    let suggested = action.suggested.lock().unwrap();
+
+    suggested
+        .get(&path)
+        .unwrap_or_else(|| panic!("No suggested bindings for profile {}", path.val))
+        .iter()
+        .map(|path| path.val.clone())
+        .collect()
 }
 
 macro_rules! fn_unimplemented_impl {
@@ -228,6 +244,14 @@ struct Instance {
     debug: u64,
     event_receiver: mpsc::Receiver<xr::EventDataBuffer>,
     event_sender: mpsc::Sender<xr::EventDataBuffer>,
+    paths: Mutex<HashMap<String, Arc<Path>>>,
+}
+
+#[repr(C)]
+#[derive(Eq, Hash, PartialEq)]
+struct Path {
+    debug: u64,
+    val: String,
 }
 
 #[repr(C)]
@@ -262,12 +286,14 @@ struct Action {
     localized_name: CString,
     state: AtomicCell<ActionState>,
     pending_state: AtomicCell<Option<ActionState>>,
+    suggested: Mutex<HashMap<Arc<Path>, Vec<Arc<Path>>>>,
 }
 
 impl_handle!(Instance, xr::Instance, 342);
 impl_handle!(Session, xr::Session, 442);
 impl_handle!(ActionSet, xr::ActionSet, 542);
 impl_handle!(Action, xr::Action, 662);
+impl_handle!(Path, xr::Path, 762);
 
 macro_rules! destroy_handle {
     ($ty:ty, $handle:expr) => {{
@@ -286,6 +312,7 @@ extern "system" fn create_instance(
         debug: Instance::DEBUG_VAL,
         event_receiver: rx,
         event_sender: tx,
+        paths: Default::default(),
     });
     unsafe {
         *instance = xr::Instance::from_raw(Arc::into_raw(inst) as u64);
@@ -428,10 +455,12 @@ extern "system" fn create_action(
             xr::ActionType::POSE_INPUT => ActionState::Pose,
             xr::ActionType::FLOAT_INPUT => ActionState::Float(0.0),
             xr::ActionType::VECTOR2F_INPUT => ActionState::Vector2(0.0, 0.0),
+            xr::ActionType::VIBRATION_OUTPUT => ActionState::Haptic,
             other => unimplemented!("unhandled action type: {other:?}"),
         }
         .into(),
         pending_state: None.into(),
+        suggested: Mutex::default(),
     });
 
     set.pending_actions.write().unwrap().push(a.clone());
@@ -521,10 +550,18 @@ extern "system" fn poll_event(
 }
 
 extern "system" fn string_to_path(
-    _: xr::Instance,
-    _: *const c_char,
-    _: *mut xr::Path,
+    instance: xr::Instance,
+    string: *const c_char,
+    path: *mut xr::Path,
 ) -> xr::Result {
+    let instance = Instance::from_xr(instance);
+    let s = unsafe { CStr::from_ptr(string) }.to_str().unwrap();
+    let mut paths = instance.paths.lock().unwrap();
+    let p = Arc::clone(paths.entry(s.to_string()).or_insert(Arc::new(Path {
+        debug: Path::DEBUG_VAL,
+        val: s.to_string(),
+    })));
+    unsafe { path.write(xr::Path::from_raw(Arc::into_raw(p) as u64)) }
     xr::Result::SUCCESS
 }
 
@@ -559,9 +596,32 @@ extern "system" fn end_session(session: xr::Session) -> xr::Result {
 }
 
 extern "system" fn suggest_interaction_profile_bindings(
-    _: xr::Instance,
-    _: *const xr::InteractionProfileSuggestedBinding,
+    instance: xr::Instance,
+    binding: *const xr::InteractionProfileSuggestedBinding,
 ) -> xr::Result {
+    let _ = Instance::from_xr(instance);
+    let binding = unsafe { binding.as_ref().unwrap() };
+
+    let profile_path = Path::from_xr(binding.interaction_profile);
+    let bindings = unsafe {
+        std::slice::from_raw_parts(
+            binding.suggested_bindings,
+            binding.count_suggested_bindings as usize,
+        )
+    };
+
+    for xr::ActionSuggestedBinding { action, binding } in bindings.iter().copied() {
+        let action = Action::from_xr(action);
+        let binding = Path::from_xr(binding);
+        action
+            .suggested
+            .lock()
+            .unwrap()
+            .entry(profile_path.clone())
+            .or_default()
+            .push(binding);
+    }
+
     xr::Result::SUCCESS
 }
 
