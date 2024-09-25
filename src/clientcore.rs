@@ -10,14 +10,15 @@ use crate::{
     rendermodels::RenderModels,
     screenshots::Screenshots,
     system::System,
-    vr::{self, IVRClientCore003_Interface},
+    vr::{self, IVRClientCore003_Interface, IVRInput010_Interface},
     Inherits, InterfaceImpl,
 };
 
 use log::{debug, error, info, warn};
+use serde::Deserialize;
 use std::any::{Any, TypeId};
 use std::collections::{hash_map::Entry, HashMap};
-use std::ffi::{c_char, c_void, CStr};
+use std::ffi::{c_char, c_void, CStr, CString};
 use std::sync::{Arc, LazyLock, Mutex, OnceLock, RwLock, Weak};
 
 type ErasedInterface = dyn Any + Sync + Send;
@@ -124,13 +125,40 @@ impl IVRClientCore003_Interface for ClientCore {
     fn Init(
         &self,
         _application_type: vr::EVRApplicationType,
-        _startup_info: *const c_char,
+        startup_info: *const c_char,
     ) -> vr::EVRInitError {
+        let manifest_path = (!startup_info.is_null())
+            .then(|| {
+                let info = unsafe { CStr::from_ptr(startup_info) };
+
+                // The startup info is undocumented, but is used in Proton:
+                // https://github.com/ValveSoftware/Proton/blob/1a73b04e6cdf29297c6a79a4098ba17e2bf18872/vrclient_x64/json_converter.cpp#L244
+                #[derive(Deserialize)]
+                struct StartupInfo {
+                    action_manifest_path: CString,
+                }
+
+                match serde_json::from_slice::<StartupInfo>(info.to_bytes()) {
+                    Ok(info) => Some(info.action_manifest_path),
+                    Err(e) => {
+                        warn!("Failed to parse startup info: {e:?}");
+                        None
+                    }
+                }
+            })
+            .flatten();
+
         match OpenXrData::new(&Injector {
             store: self.interface_store.clone(),
         }) {
             Ok(data) => {
-                *self.openxr.write().unwrap() = Some(data.into());
+                let data = Arc::new(data);
+                if let Some(path) = manifest_path {
+                    data.input
+                        .force(|_| Input::new(data.clone()))
+                        .SetActionManifestPath(path.as_ptr());
+                }
+                *self.openxr.write().unwrap() = Some(data);
 
                 vr::EVRInitError::VRInitError_None
             }

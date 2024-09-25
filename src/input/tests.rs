@@ -447,8 +447,8 @@ fn dpad_input() {
     });
 
     let state = f.get_bool_state(boolact).unwrap();
-    assert_eq!(state.bState, true);
     assert_eq!(state.bActive, true);
+    assert_eq!(state.bState, true);
 
     fakexr::set_action_state(
         dpad_data.parent.as_raw(),
@@ -460,8 +460,8 @@ fn dpad_input() {
     });
 
     let state = f.get_bool_state(boolact).unwrap();
-    assert_eq!(state.bState, false);
     assert_eq!(state.bActive, true);
+    assert_eq!(state.bState, false);
 }
 
 #[test]

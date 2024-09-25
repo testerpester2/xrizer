@@ -21,6 +21,9 @@ impl<C: openxr_data::Compositor> Input<C> {
         session_data: &SessionData,
         manifest_path: &Path,
     ) -> Result<(), vr::EVRInputError> {
+        //let manifest_path = Path::new(
+        //    "/ssd-xtra/dev/New Unity Project/leenox_Data/StreamingAssets/SteamVR/actions.json",
+        //);
         match self.loaded_actions_path.get() {
             Some(p) => {
                 assert_eq!(p, manifest_path);
@@ -459,7 +462,7 @@ enum ActionMode {
 }
 
 #[derive(Deserialize, Debug)]
-#[serde(untagged)]
+#[serde(untagged, deny_unknown_fields)]
 enum ActionInput {
     Button {
         click: ActionBindingOutput,
@@ -469,7 +472,10 @@ enum ActionInput {
     },
     Vector2 {
         position: ActionBindingOutput,
+        click: Option<ActionBindingOutput>,
+        touch: Option<ActionBindingOutput>,
     },
+    #[serde(deserialize_with = "dpad_deser")]
     Dpad {
         east: Option<ActionBindingOutput>,
         south: Option<ActionBindingOutput>,
@@ -479,6 +485,44 @@ enum ActionInput {
     },
     #[allow(dead_code)]
     Unknown(serde_json::Value),
+}
+
+fn dpad_deser<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<
+    (
+        Option<ActionBindingOutput>,
+        Option<ActionBindingOutput>,
+        Option<ActionBindingOutput>,
+        Option<ActionBindingOutput>,
+        Option<ActionBindingOutput>,
+    ),
+    D::Error,
+> {
+    let mut fields: HashMap<String, ActionBindingOutput> = Deserialize::deserialize(d)?;
+    // This order must match the order of the fields in the dpad variant.
+    let ret = [
+        fields.remove("east"),
+        fields.remove("south"),
+        fields.remove("north"),
+        fields.remove("west"),
+        fields.remove("center"),
+    ];
+
+    if !fields.is_empty() {
+        return Err(D::Error::unknown_field(
+            fields.keys().next().unwrap(),
+            &["east", "south", "west", "north", "center"],
+        ));
+    }
+
+    if ret.iter().all(|a| a.is_none()) {
+        return Err(D::Error::custom(
+            "expected one of east, south, west, north, or center",
+        ));
+    }
+
+    Ok(ret.into())
 }
 
 #[derive(Deserialize, Debug)]
@@ -827,24 +871,51 @@ fn handle_sources(
         let Some(translated) = path_translator(&path) else {
             continue;
         };
-        let xr_path = || instance.string_to_path(&translated).unwrap();
 
         use super::ActionData::*;
-        macro_rules! try_get_binding {
-            ($action_path:expr, $action_pat:pat, $($assert_msg:tt)*) => {
-                if !find_action(&actions, $action_path) {
-                    continue;
-                }
 
-                assert!(
-                    matches!(actions[$action_path], $action_pat),
-                    $($assert_msg)*
-                );
-
-                trace!("suggesting {translated} for {}", $action_path);
-                bindings.push(($action_path.clone(), xr_path()));
+        fn try_get_binding(
+            actions: &LoadedActionDataMap,
+            instance: &xr::Instance,
+            action_path: String,
+            input_path: String,
+            action_pattern: impl Fn(&super::ActionData),
+            bindings: &mut Vec<(String, xr::Path)>,
+        ) {
+            if find_action(&actions, &action_path) {
+                action_pattern(&actions[&action_path]);
+                trace!("suggesting {input_path} for {action_path}");
+                let binding_path = instance.string_to_path(&input_path).unwrap();
+                bindings.push((action_path, binding_path));
             }
         }
+
+        macro_rules! action_match {
+            ($pat:pat, $($assert_msg:tt)*) => {
+                |data| {
+                    assert!(
+                        matches!(data, $pat),
+                        $($assert_msg)*
+                    )
+                }
+            }
+        }
+
+        let mut try_get_bool_binding = |action_path: &str, input_path: String| {
+            try_get_binding(
+                actions,
+                instance,
+                action_path.to_string(),
+                input_path,
+                action_match!(
+                    Bool(_) | Vector1 { .. },
+                    "Action for {} should be a bool or float",
+                    action_path
+                ),
+                &mut bindings,
+            );
+        };
+
         match mode {
             ActionMode::None => unreachable!(),
             ActionMode::Button => {
@@ -856,12 +927,7 @@ fn handle_sources(
                     continue;
                 };
 
-                try_get_binding!(
-                    output,
-                    Bool(_) | Vector1 { .. },
-                    "Action for {} should be a bool or float",
-                    output
-                );
+                try_get_bool_binding(output, translated);
             }
             ActionMode::Trigger => {
                 let output = match inputs {
@@ -873,10 +939,16 @@ fn handle_sources(
                     }
                 };
 
-                try_get_binding!(
-                    output,
-                    Bool(_) | Vector1 { .. },
-                    "Trigger action should be a bool or float",
+                try_get_binding(
+                    actions,
+                    instance,
+                    output.clone(),
+                    translated,
+                    action_match!(
+                        Bool(_) | Vector1 { .. },
+                        "Trigger action should be a bool or float"
+                    ),
+                    &mut bindings,
                 );
             }
             ActionMode::Dpad => {
@@ -894,20 +966,40 @@ fn handle_sources(
             }
             ActionMode::Trackpad | ActionMode::Joystick => {
                 let ActionInput::Vector2 {
-                    position: ActionBindingOutput { output },
+                    position,
+                    click,
+                    touch,
                 } = inputs
                 else {
                     error!(
-                        "expected vector2 input for {path} in {action_set_name}, got {inputs:?}"
+                        "expected vector2 input for {path} in {action_set_name}, got {inputs:#?}"
                     );
                     continue;
                 };
 
-                try_get_binding!(
-                    output,
-                    Vector2 { .. },
-                    "Expected Vector2 action for {}",
-                    output
+                if let Some((output, click_path)) = click.as_ref().and_then(|b| {
+                    Some(&b.output).zip(path_translator(&format!("{translated}/click")))
+                }) {
+                    try_get_bool_binding(output, click_path);
+                }
+
+                if let Some((output, touch_path)) = touch.as_ref().and_then(|b| {
+                    Some(&b.output).zip(path_translator(&format!("{translated}/touch")))
+                }) {
+                    try_get_bool_binding(output, touch_path);
+                }
+
+                try_get_binding(
+                    actions,
+                    instance,
+                    position.output.clone(),
+                    translated.clone(),
+                    action_match!(
+                        Vector2 { .. },
+                        "Expected Vector2 action for {}",
+                        position.output
+                    ),
+                    &mut bindings,
                 );
             }
             ActionMode::Unknown(mode) => {

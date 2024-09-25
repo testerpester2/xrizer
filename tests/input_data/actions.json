@@ -11,37 +11,37 @@
 	],
 	"actions": [
 		{
-			"name": "/actions/set1/in/boolact",
+			"name": "/actions/set1/in/BoolAct",
 			"requirement": "mandatory",
 			"type": "boolean"
 		},
 		{
-			"name": "/actions/set1/in/vec1act",
+			"name": "/actions/set1/in/Vec1Act",
 			"requirement": "optional",
 			"type": "vector1"
 		},
 		{
-			"name": "/actions/set1/in/vec2act",
+			"name": "/actions/set1/in/Vec2Act",
 			"requirement": "optional",
 			"type": "vector2"
 		},
 		{
-			"name": "/actions/set1/in/pose",
+			"name": "/actions/set1/in/Pose",
 			"requirement": "optional",
 			"type": "pose"
 		},
 		{
-			"name": "/actions/set1/in/skellyl",
+			"name": "/actions/set1/in/SkellyL",
 			"type": "skeleton",
 			"skeleton": "/skeleton/hand/left"
 		},
 		{
-			"name": "/actions/set1/in/skellyr",
+			"name": "/actions/set1/in/SkellyR",
 			"type": "skeleton",
 			"skeleton": "/skeleton/hand/right"
 		},
 		{
-			"name": "/actions/set1/in/vib",
+			"name": "/actions/set1/in/Vib",
 			"requirement": "mandatory",
 			"type": "vibration"
 		}

@@ -101,7 +101,8 @@ mod tests {
                 // Suggesting float paths for boolean inputs is legal
                 "/user/hand/left/input/trigger/value".into(),
                 "/user/hand/right/input/trigger/value".into(),
-                // TODO: binding for trackpad click?
+                "/user/hand/left/input/trackpad/click".into(),
+                "/user/hand/left/input/trackpad/touch".into(),
             ],
         );
 
