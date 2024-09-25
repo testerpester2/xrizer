@@ -253,10 +253,12 @@ fn load_action_sets(
 
 type LoadedActionDataMap = HashMap<String, super::ActionData>;
 
+#[track_caller]
 fn find_action(actions: &LoadedActionDataMap, name: &str) -> bool {
     let ret = actions.contains_key(name);
-    if ret {
-        warn!("Couldn't find action {name}, skipping");
+    if !ret {
+        let caller = std::panic::Location::caller();
+        warn!("Couldn't find action {name}, skipping ({})", caller.line());
     }
     ret
 }
@@ -1108,6 +1110,11 @@ pub(super) struct PathTranslation {
 
 pub(super) trait InteractionProfile {
     const PROFILE_PATH: &'static str;
+    /// Corresponds to Prop_ModelNumber_String
+    /// Can be pulled from a SteamVR System Report
+    const MODEL: &'static CStr;
+    /// Corresponds to Prop_ControllerType_String
+    /// Can be pulled from a SteamVR System Report
     const OPENVR_CONTROLLER_TYPE: &'static CStr;
     const TRANSLATE_MAP: &'static [PathTranslation];
 

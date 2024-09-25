@@ -14,6 +14,7 @@ use action_manifest::InteractionProfile;
 use log::{debug, info, trace, warn};
 use openxr as xr;
 use slotmap::{new_key_type, Key, KeyData, SecondaryMap, SlotMap};
+use std::collections::HashMap;
 use std::f32::consts::PI;
 use std::ffi::{c_char, CStr, CString};
 use std::path::PathBuf;
@@ -1094,37 +1095,46 @@ impl<C: openxr_data::Compositor> Input<C> {
     ) -> Option<&'static CStr> {
         use vr::ETrackedDeviceProperty::*;
 
+        struct ProfileData {
+            controller_type: &'static CStr,
+            model_number: &'static CStr,
+        }
+        static PROFILE_MAP: OnceLock<HashMap<xr::Path, ProfileData>> = OnceLock::new();
+        let get_profile_data = || {
+            let map = PROFILE_MAP.get_or_init(|| {
+                let instance = &self.openxr.instance;
+                let mut map = HashMap::new();
+                let out = &mut map;
+                action_manifest::for_each_profile! {<'a>(
+                    instance: &'a xr::Instance,
+                    out: &'a mut HashMap<xr::Path, ProfileData>
+                ) {
+                    out.insert(
+                        instance.string_to_path(P::PROFILE_PATH).unwrap(),
+                        ProfileData {
+                            controller_type: P::OPENVR_CONTROLLER_TYPE,
+                            model_number: P::MODEL,
+                        }
+                    );
+                }}
+                map
+            });
+            let hand = match hand {
+                Hand::Left => &self.openxr.left_hand,
+                Hand::Right => &self.openxr.right_hand,
+            };
+            let profile = hand.interaction_profile.load();
+            map.get(&profile)
+        };
+
         match property {
-            Prop_ControllerType_String => {
-                static PATH_MAP: OnceLock<Vec<(xr::Path, &'static CStr)>> = OnceLock::new();
-                let map = PATH_MAP.get_or_init(|| {
-                    let instance = &self.openxr.instance;
-                    let mut v = Vec::new();
-                    let out = &mut v;
-                    action_manifest::for_each_profile! {<'a>(
-                        instance: &'a xr::Instance,
-                        out: &'a mut Vec<(xr::Path, &'static CStr)>
-                    ) {
-                        out.push((
-                            instance.string_to_path(P::PROFILE_PATH).unwrap(),
-                            P::OPENVR_CONTROLLER_TYPE,
-                        ));
-                    }}
-                    v
-                });
-
-                let hand = match hand {
-                    Hand::Left => &self.openxr.left_hand,
-                    Hand::Right => &self.openxr.right_hand,
-                };
-                let profile = hand.interaction_profile.load();
-
-                let controller_type = map
-                    .iter()
-                    .find_map(|(path, ty)| (*path == profile).then_some(*ty));
-
-                controller_type
-            }
+            // Audica likes to apply controller specific tweaks via this property
+            Prop_ControllerType_String => get_profile_data().map(|data| data.controller_type),
+            // I Expect You To Die 3 identifies controllers with this property -
+            // why it couldn't just use ControllerType instead is beyond me...
+            Prop_ModelNumber_String => get_profile_data().map(|data| data.model_number),
+            // Required for controllers to be acknowledged in I Expect You To Die 3
+            Prop_SerialNumber_String | Prop_ManufacturerName_String => Some(c"<unknown>"),
             _ => None,
         }
     }
