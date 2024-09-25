@@ -601,7 +601,10 @@ impl vr::IVRSystem022_Interface for System {
         instance: *mut crate::bindings::VkInstance_T,
     ) {
         if texture_type != vr::ETextureType::TextureType_Vulkan {
-            todo!("Support textures besides Vulkan ({texture_type:?})")
+            // Proton doesn't seem to properly translate this function, but it doesn't appear to
+            // actually matter.
+            log::error!("Unsupported texture type: {texture_type:?})");
+            return;
         }
 
         unsafe {
