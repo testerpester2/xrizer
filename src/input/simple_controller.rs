@@ -18,16 +18,16 @@ impl InteractionProfile for SimpleController {
         },
         PathTranslation {
             from: "trigger",
-            to: "select/click",
+            to: "select",
         },
         PathTranslation {
             from: "application_menu",
-            to: "menu/click",
+            to: "menu",
         },
     ];
 
-    fn legacy_bindings<'a>(
-        string_to_path: impl Fn(&'a str) -> openxr::Path,
+    fn legacy_bindings(
+        string_to_path: impl for<'a> Fn(&'a str) -> openxr::Path,
         actions: &LegacyActions,
     ) -> Vec<openxr::Binding> {
         let mut ret = Vec::new();

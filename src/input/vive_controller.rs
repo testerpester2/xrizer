@@ -17,16 +17,20 @@ impl InteractionProfile for ViveWands {
             to: "input/grip/pose",
         },
         PathTranslation {
-            from: "input/grip",
-            to: "input/squeeze/click",
+            from: "grip",
+            to: "squeeze",
         },
         PathTranslation {
-            from: "trigger",
+            from: "trigger/pull",
+            to: "trigger/value",
+        },
+        PathTranslation {
+            from: "trigger/click",
             to: "trigger/value",
         },
         PathTranslation {
             from: "application_menu",
-            to: "menu/click",
+            to: "menu",
         },
     ];
 
@@ -55,8 +59,8 @@ impl InteractionProfile for ViveWands {
         .collect()
     }
 
-    fn legacy_bindings<'a>(
-        stp: impl Fn(&'a str) -> openxr::Path,
+    fn legacy_bindings(
+        stp: impl for<'a> Fn(&'a str) -> openxr::Path,
         actions: &LegacyActions,
     ) -> Vec<openxr::Binding> {
         let mut ret = Vec::new();

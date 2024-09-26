@@ -25,6 +25,7 @@ pub fn set_action_state(action: xr::Action, state: ActionState) {
     action.pending_state.store(Some(state));
 }
 
+#[track_caller]
 pub fn get_suggested_bindings(action: xr::Action, profile: xr::Path) -> Vec<String> {
     let action = Action::from_xr(action);
     let path = Path::from_xr(profile);
@@ -32,7 +33,12 @@ pub fn get_suggested_bindings(action: xr::Action, profile: xr::Path) -> Vec<Stri
 
     suggested
         .get(&path)
-        .unwrap_or_else(|| panic!("No suggested bindings for profile {}", path.val))
+        .unwrap_or_else(|| {
+            panic!(
+                "No suggested bindings for profile {} for action {:?}",
+                path.val, action.name,
+            )
+        })
         .iter()
         .map(|path| path.val.clone())
         .collect()
@@ -248,7 +254,7 @@ struct Instance {
 }
 
 #[repr(C)]
-#[derive(Eq, Hash, PartialEq)]
+#[derive(Eq, Hash, PartialEq, Debug)]
 struct Path {
     debug: u64,
     val: String,

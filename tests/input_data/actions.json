@@ -50,6 +50,10 @@
 		{
 			"binding_url": "wands.json",
 			"controller_type": "vive_controller"
+		},
+		{
+			"binding_url": "knuckles.json",
+			"controller_type": "knuckles"
 		}
 	],
 	"localization": []

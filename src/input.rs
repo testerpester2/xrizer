@@ -1,4 +1,5 @@
 mod action_manifest;
+mod knuckles;
 mod simple_controller;
 mod vive_controller;
 
@@ -154,7 +155,13 @@ impl BoolActionData {
 
         let active = click_or_touch
             .as_ref()
-            .map(|a| a.state(&session, xr::Path::NULL).map(|s| s.current_state))
+            .map(|a| {
+                // If this action isn't bound in the current interaction profile,
+                // is_active will be false - in this case, it's probably a joystick touch dpad, in
+                // which case we still want to read the current state.
+                a.state(&session, xr::Path::NULL)
+                    .map(|s| !s.is_active || s.current_state)
+            })
             .unwrap_or(Ok(true))?;
 
         if !active {
@@ -1159,7 +1166,12 @@ fn setup_legacy_bindings(
         instance: &'a xr::Instance,
         actions: &'a LegacyActions
     ) {
-        let stp = |s| instance.string_to_path(s).unwrap();
+        const fn constrain<F>(f: F) -> F
+            where F: for<'a> Fn(&'a str) -> xr::Path
+        {
+            f
+        }
+        let stp = constrain(|s| instance.string_to_path(s).unwrap());
         let bindings = P::legacy_bindings(stp, actions);
         let profile = stp(P::PROFILE_PATH);
         instance
