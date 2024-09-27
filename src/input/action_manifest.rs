@@ -6,7 +6,7 @@ use crate::{
 use log::{debug, error, info, trace, warn};
 use openxr as xr;
 use serde::{
-    de::{Error, Unexpected},
+    de::{Error, IgnoredAny, Unexpected},
     Deserialize,
 };
 use slotmap::SecondaryMap;
@@ -406,12 +406,44 @@ fn path_to_skeleton<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Hand, D::E
     }
 }
 
+#[derive(Deserialize, Debug)]
+struct ActionBindingOutput {
+    output: String,
+}
+
 #[derive(Deserialize)]
-struct ActionBinding {
-    mode: ActionMode,
-    path: String,
-    inputs: ActionInput,
-    parameters: Option<DpadParameters>,
+#[serde(tag = "mode", rename_all = "lowercase", deny_unknown_fields)]
+enum ActionBinding {
+    None(IgnoredAny),
+    Button {
+        path: String,
+        inputs: ButtonInput,
+    },
+    Dpad {
+        path: String,
+        inputs: DpadInput,
+        parameters: Option<DpadParameters>,
+    },
+    Trigger {
+        path: String,
+        inputs: TriggerInput,
+    },
+    Trackpad(Vector2Mode),
+    Joystick(Vector2Mode),
+}
+
+#[derive(Deserialize)]
+struct ButtonInput {
+    click: ActionBindingOutput,
+}
+
+#[derive(Deserialize)]
+struct DpadInput {
+    east: Option<ActionBindingOutput>,
+    south: Option<ActionBindingOutput>,
+    north: Option<ActionBindingOutput>,
+    west: Option<ActionBindingOutput>,
+    center: Option<ActionBindingOutput>,
 }
 
 #[derive(Deserialize)]
@@ -423,13 +455,6 @@ struct DpadParameters {
     #[serde(deserialize_with = "parse_pct")]
     overlap_pct: u8,
     sticky: bool,
-}
-
-fn parse_pct<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u8, D::Error> {
-    let val: &str = Deserialize::deserialize(d)?;
-    u8::from_str_radix(val, 10).map_err(|e| {
-        D::Error::invalid_value(Unexpected::Str(val), &format!("a valid u8 ({e})").as_str())
-    })
 }
 
 impl Default for DpadParameters {
@@ -450,87 +475,31 @@ enum DpadSubMode {
     Touch,
 }
 
-#[derive(Deserialize, Debug)]
-#[serde(rename_all = "lowercase")]
-enum ActionMode {
-    Dpad,
-    Button,
-    Trigger,
-    Trackpad,
-    Joystick,
-    None,
-    #[serde(untagged)]
-    Unknown(String),
+fn parse_pct<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u8, D::Error> {
+    let val: &str = Deserialize::deserialize(d)?;
+    u8::from_str_radix(val, 10).map_err(|e| {
+        D::Error::invalid_value(Unexpected::Str(val), &format!("a valid u8 ({e})").as_str())
+    })
 }
 
-#[derive(Deserialize, Debug)]
-#[serde(untagged, deny_unknown_fields)]
-enum ActionInput {
-    Button {
-        click: ActionBindingOutput,
-    },
-    Trigger {
-        pull: ActionBindingOutput,
-        touch: Option<ActionBindingOutput>,
-    },
-    Vector2 {
-        position: ActionBindingOutput,
-        click: Option<ActionBindingOutput>,
-        touch: Option<ActionBindingOutput>,
-    },
-    #[serde(deserialize_with = "dpad_deser")]
-    Dpad {
-        east: Option<ActionBindingOutput>,
-        south: Option<ActionBindingOutput>,
-        north: Option<ActionBindingOutput>,
-        west: Option<ActionBindingOutput>,
-        center: Option<ActionBindingOutput>,
-    },
-    #[allow(dead_code)]
-    Unknown(serde_json::Value),
+#[derive(Deserialize)]
+struct TriggerInput {
+    pull: Option<ActionBindingOutput>,
+    touch: Option<ActionBindingOutput>,
+    click: Option<ActionBindingOutput>,
 }
 
-fn dpad_deser<'de, D: serde::Deserializer<'de>>(
-    d: D,
-) -> Result<
-    (
-        Option<ActionBindingOutput>,
-        Option<ActionBindingOutput>,
-        Option<ActionBindingOutput>,
-        Option<ActionBindingOutput>,
-        Option<ActionBindingOutput>,
-    ),
-    D::Error,
-> {
-    let mut fields: HashMap<String, ActionBindingOutput> = Deserialize::deserialize(d)?;
-    // This order must match the order of the fields in the dpad variant.
-    let ret = [
-        fields.remove("east"),
-        fields.remove("south"),
-        fields.remove("north"),
-        fields.remove("west"),
-        fields.remove("center"),
-    ];
-
-    if !fields.is_empty() {
-        return Err(D::Error::unknown_field(
-            fields.keys().next().unwrap(),
-            &["east", "south", "west", "north", "center"],
-        ));
-    }
-
-    if ret.iter().all(|a| a.is_none()) {
-        return Err(D::Error::custom(
-            "expected one of east, south, west, north, or center",
-        ));
-    }
-
-    Ok(ret.into())
+#[derive(Deserialize)]
+struct Vector2Mode {
+    path: String,
+    inputs: Vector2Input,
 }
 
-#[derive(Deserialize, Debug)]
-struct ActionBindingOutput {
-    output: String,
+#[derive(Deserialize)]
+struct Vector2Input {
+    position: ActionBindingOutput,
+    click: Option<ActionBindingOutput>,
+    touch: Option<ActionBindingOutput>,
 }
 
 /// Call a generic function with each supported interaction profile.
@@ -732,22 +701,18 @@ fn handle_dpad_action(
     action_set_name: &str,
     action_set: &xr::ActionSet,
     actions: &mut LoadedActionDataMap,
-    inputs: &ActionInput,
-    parameters: Option<&DpadParameters>,
-) -> Vec<(String, xr::Path)> {
-    // Would love to use the dpad extension here, but it doesn't seem to
-    // support touch trackpad dpads.
-    let ActionInput::Dpad {
+    DpadInput {
         east,
         south,
         north,
         west,
         center,
-    } = inputs
-    else {
-        error!("expected dpad input for {parent_path} in {action_set_name}, got {inputs:?}");
-        return vec![];
-    };
+    }: &DpadInput,
+    parameters: Option<&DpadParameters>,
+) -> Vec<(String, xr::Path)> {
+    // Would love to use the dpad extension here, but it doesn't seem to
+    // support touch trackpad dpads.
+    // TODO: actually take the deadzone and overlap into account
 
     // Workaround weird closure lifetime quirks.
     const fn constrain<F>(f: F) -> F
@@ -932,47 +897,37 @@ fn handle_sources(
     action_set: &xr::ActionSet,
     sources: &[ActionBinding],
 ) -> Vec<(String, xr::Path)> {
+    fn try_get_binding(
+        actions: &LoadedActionDataMap,
+        instance: &xr::Instance,
+        action_path: String,
+        input_path: String,
+        action_pattern: impl Fn(&super::ActionData),
+        bindings: &mut Vec<(String, xr::Path)>,
+    ) {
+        if find_action(&actions, &action_path) {
+            action_pattern(&actions[&action_path]);
+            trace!("suggesting {input_path} for {action_path}");
+            let binding_path = instance.string_to_path(&input_path).unwrap();
+            bindings.push((action_path, binding_path));
+        }
+    }
+
+    macro_rules! action_match {
+        ($pat:pat, $($assert_msg:tt)*) => {
+            |data| {
+                assert!(
+                    matches!(data, $pat),
+                    $($assert_msg)*
+                )
+            }
+        }
+    }
+
+    use super::ActionData::*;
     let mut bindings = Vec::new();
-    for ActionBinding {
-        mode,
-        path,
-        inputs,
-        parameters,
-    } in sources
-    {
-        if matches!(mode, ActionMode::None) {
-            continue;
-        }
 
-        use super::ActionData::*;
-
-        fn try_get_binding(
-            actions: &LoadedActionDataMap,
-            instance: &xr::Instance,
-            action_path: String,
-            input_path: String,
-            action_pattern: impl Fn(&super::ActionData),
-            bindings: &mut Vec<(String, xr::Path)>,
-        ) {
-            if find_action(&actions, &action_path) {
-                action_pattern(&actions[&action_path]);
-                trace!("suggesting {input_path} for {action_path}");
-                let binding_path = instance.string_to_path(&input_path).unwrap();
-                bindings.push((action_path, binding_path));
-            }
-        }
-
-        macro_rules! action_match {
-            ($pat:pat, $($assert_msg:tt)*) => {
-                |data| {
-                    assert!(
-                        matches!(data, $pat),
-                        $($assert_msg)*
-                    )
-                }
-            }
-        }
-
+    for mode in sources {
         let mut try_get_bool_binding = |action_path: &str, input_path: String| {
             try_get_binding(
                 actions,
@@ -989,38 +944,47 @@ fn handle_sources(
         };
 
         match mode {
-            ActionMode::None => unreachable!(),
-            ActionMode::Button => {
-                let ActionInput::Button {
-                    click: ActionBindingOutput { output },
-                } = inputs
-                else {
-                    error!("Input for button action for {path} in {action_set_name} is wrong.");
-                    continue;
-                };
-
+            ActionBinding::None(_) => {}
+            ActionBinding::Button {
+                path,
+                inputs:
+                    ButtonInput {
+                        click: ActionBindingOutput { output },
+                    },
+            } => {
                 let Some(translated) = path_translator(&format!("{path}/click")) else {
                     continue;
                 };
 
                 try_get_bool_binding(output, translated);
             }
-            ActionMode::Trigger => {
-                let suffixes_and_outputs = match inputs {
-                    ActionInput::Button { click } => vec![("click", &click.output)],
-                    ActionInput::Trigger { pull, touch } => {
-                        let mut r = vec![("pull", &pull.output)];
-                        if let Some(touch) = touch {
-                            r.push(("touch", &touch.output));
-                        }
-                        r
-                    }
-                    other => {
-                        error!("Expected button or trigger path for trigger action for {path} in {action_set_name}, got: {other:?}");
-                        continue;
-                    }
+            ActionBinding::Dpad {
+                path,
+                inputs,
+                parameters,
+            } => {
+                let Some(parent_translated) = path_translator(path) else {
+                    continue;
                 };
+                let data = handle_dpad_action(
+                    |s| path_translator(s).map(|s| instance.string_to_path(&s).unwrap()),
+                    &parent_translated,
+                    action_set_name,
+                    action_set,
+                    actions,
+                    inputs,
+                    parameters.as_ref(),
+                );
 
+                bindings.extend(data);
+            }
+            ActionBinding::Trigger {
+                path,
+                inputs: TriggerInput { pull, touch, click },
+            } => {
+                let suffixes_and_outputs = [("pull", pull), ("touch", touch), ("click", click)]
+                    .into_iter()
+                    .filter_map(|(sfx, input)| Some(sfx).zip(input.as_ref().map(|i| &i.output)));
                 for (suffix, output) in suffixes_and_outputs {
                     let Some(translated) = path_translator(&format!("{path}/{suffix}")) else {
                         continue;
@@ -1039,38 +1003,17 @@ fn handle_sources(
                     );
                 }
             }
-            ActionMode::Dpad => {
-                let Some(parent_translated) = path_translator(path) else {
-                    continue;
-                };
-                let data = handle_dpad_action(
-                    |s| path_translator(s).map(|s| instance.string_to_path(&s).unwrap()),
-                    &parent_translated,
-                    action_set_name,
-                    action_set,
-                    actions,
-                    inputs,
-                    parameters.as_ref(),
-                );
-
-                bindings.extend(data);
-            }
-            ActionMode::Trackpad | ActionMode::Joystick => {
-                let ActionInput::Vector2 {
-                    position,
-                    click,
-                    touch,
-                } = inputs
-                else {
-                    error!(
-                        "expected vector2 input for {path} in {action_set_name}, got {inputs:#?}"
-                    );
-                    continue;
-                };
-
+            ActionBinding::Trackpad(data) | ActionBinding::Joystick(data) => {
+                let Vector2Mode { path, inputs } = data;
                 let Some(translated) = path_translator(path) else {
                     continue;
                 };
+
+                let Vector2Input {
+                    position,
+                    click,
+                    touch,
+                } = inputs;
 
                 if let Some((output, click_path)) = click.as_ref().and_then(|b| {
                     Some(&b.output).zip(path_translator(&format!("{translated}/click")))
@@ -1097,15 +1040,11 @@ fn handle_sources(
                     &mut bindings,
                 );
             }
-            ActionMode::Unknown(mode) => {
-                warn!("unhandled action mode: {mode:?}");
-                continue;
-            }
         }
     }
-
     bindings
 }
+
 fn handle_skeleton_bindings(
     instance: &xr::Instance,
     actions: &LoadedActionDataMap,
