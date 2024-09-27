@@ -106,6 +106,15 @@
 				},
 				{
 					"inputs": {
+						"value": {
+							"output": "/actions/set1/in/vec1act"
+						}
+					},
+					"mode": "scalar_constant",
+					"path": "/user/hand/right/input/grip"
+				},
+				{
+					"inputs": {
 						"position": {
 							"output": "/actions/set1/in/vec2act"
 						},

@@ -15,14 +15,17 @@ impl InteractionProfile for SimpleController {
         PathTranslation {
             from: "pose/raw",
             to: "input/grip/pose",
+            stop: true,
         },
         PathTranslation {
             from: "trigger",
             to: "select",
+            stop: true,
         },
         PathTranslation {
             from: "application_menu",
             to: "menu",
+            stop: true,
         },
     ];
 

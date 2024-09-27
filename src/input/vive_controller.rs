@@ -15,22 +15,27 @@ impl InteractionProfile for ViveWands {
         PathTranslation {
             from: "pose/raw",
             to: "input/grip/pose",
+            stop: true,
         },
         PathTranslation {
             from: "grip",
             to: "squeeze",
+            stop: true,
         },
         PathTranslation {
             from: "trigger/pull",
             to: "trigger/value",
+            stop: true,
         },
         PathTranslation {
             from: "trigger/click",
             to: "trigger/value",
+            stop: true,
         },
         PathTranslation {
             from: "application_menu",
             to: "menu",
+            stop: true,
         },
     ];
 
@@ -117,6 +122,7 @@ mod tests {
             [
                 "/user/hand/left/input/trigger/value".into(),
                 "/user/hand/right/input/trigger/value".into(),
+                "/user/hand/right/input/squeeze/click".into(),
             ],
         );
 

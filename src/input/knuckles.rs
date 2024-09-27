@@ -11,10 +11,27 @@ impl InteractionProfile for Knuckles {
         PathTranslation {
             from: "pose/raw",
             to: "input/grip/pose",
+            stop: true,
         },
         PathTranslation {
             from: "pull",
             to: "value",
+            stop: true,
+        },
+        PathTranslation {
+            from: "input/grip",
+            to: "input/squeeze",
+            stop: false,
+        },
+        PathTranslation {
+            from: "squeeze/click",
+            to: "squeeze/value",
+            stop: true,
+        },
+        PathTranslation {
+            from: "trackpad/click",
+            to: "trackpad/force",
+            stop: true,
         },
     ];
 
@@ -104,8 +121,12 @@ mod tests {
                 "/user/hand/right/input/trigger/touch".into(),
                 "/user/hand/left/input/thumbstick/click".into(),
                 "/user/hand/right/input/thumbstick/click".into(),
+                "/user/hand/left/input/thumbstick/touch".into(),
                 "/user/hand/right/input/thumbstick/touch".into(),
                 "/user/hand/right/input/trackpad/touch".into(),
+                "/user/hand/left/input/squeeze/value".into(),
+                "/user/hand/left/input/trackpad/force".into(),
+                "/user/hand/right/input/trackpad/force".into(),
             ],
         );
 
@@ -115,6 +136,7 @@ mod tests {
             [
                 "/user/hand/left/input/trigger/value".into(),
                 "/user/hand/right/input/trigger/value".into(),
+                "/user/hand/left/input/squeeze/force".into(),
             ],
         );
 

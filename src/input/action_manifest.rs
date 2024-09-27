@@ -22,9 +22,6 @@ impl<C: openxr_data::Compositor> Input<C> {
         session_data: &SessionData,
         manifest_path: &Path,
     ) -> Result<(), vr::EVRInputError> {
-        //let manifest_path = Path::new(
-        //    "/ssd-xtra/dev/New Unity Project/leenox_Data/StreamingAssets/SteamVR/actions.json",
-        //);
         match self.loaded_actions_path.get() {
             Some(p) => {
                 assert_eq!(p, manifest_path);
@@ -412,12 +409,14 @@ struct ActionBindingOutput {
 }
 
 #[derive(Deserialize)]
-#[serde(tag = "mode", rename_all = "lowercase", deny_unknown_fields)]
+#[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
 enum ActionBinding {
     None(IgnoredAny),
     Button {
         path: String,
         inputs: ButtonInput,
+        #[serde(rename = "parameters")]
+        _parameters: Option<ButtonParameters>,
     },
     Dpad {
         path: String,
@@ -427,6 +426,14 @@ enum ActionBinding {
     Trigger {
         path: String,
         inputs: TriggerInput,
+    },
+    ScalarConstant {
+        path: String,
+        inputs: ScalarConstantInput,
+    },
+    ForceSensor {
+        path: String,
+        inputs: ForceSensorInput,
     },
     Trackpad(Vector2Mode),
     Joystick(Vector2Mode),
@@ -438,6 +445,12 @@ struct ButtonInput {
 }
 
 #[derive(Deserialize)]
+struct ButtonParameters {
+    #[serde(rename = "force_input")]
+    _force_input: String,
+}
+
+#[derive(Deserialize, Debug)]
 struct DpadInput {
     east: Option<ActionBindingOutput>,
     south: Option<ActionBindingOutput>,
@@ -490,6 +503,16 @@ struct TriggerInput {
 }
 
 #[derive(Deserialize)]
+struct ScalarConstantInput {
+    value: ActionBindingOutput,
+}
+
+#[derive(Deserialize)]
+struct ForceSensorInput {
+    force: ActionBindingOutput,
+}
+
+#[derive(Deserialize)]
 struct Vector2Mode {
     path: String,
     inputs: Vector2Input,
@@ -497,7 +520,7 @@ struct Vector2Mode {
 
 #[derive(Deserialize)]
 struct Vector2Input {
-    position: ActionBindingOutput,
+    position: Option<ActionBindingOutput>,
     click: Option<ActionBindingOutput>,
     touch: Option<ActionBindingOutput>,
 }
@@ -597,18 +620,19 @@ impl<C: openxr_data::Compositor> Input<C> {
         let translate_map = P::TRANSLATE_MAP;
         let path_translator = |path: &str| {
             let mut translated = path.to_string();
-            for PathTranslation { from, to } in translate_map {
+            for PathTranslation { from, to, stop } in translate_map {
                 if translated.find(from).is_some() {
                     translated = translated.replace(from, to);
-                    break;
+                    if *stop {
+                        break;
+                    }
                 }
             }
             trace!("translated {path} to {translated}");
             if !legal_paths.contains(&translated) {
-                warn!("Action for invalid path {translated}, ignoring");
-                None
+                Err(format!("Action for invalid path {translated}, ignoring"))
             } else {
-                Some(translated)
+                Ok(translated)
             }
         };
 
@@ -889,9 +913,13 @@ fn get_dpad_parent(
     )
 }
 
+fn translate_warn<'a>(action: &'a str) -> impl FnOnce(&String) + 'a {
+    move |e| warn!("{e} ({action})")
+}
+
 fn handle_sources(
     instance: &xr::Instance,
-    path_translator: impl Fn(&str) -> Option<String>,
+    path_translator: impl Fn(&str) -> Result<String, String>,
     actions: &mut LoadedActionDataMap,
     action_set_name: &str,
     action_set: &xr::ActionSet,
@@ -926,7 +954,6 @@ fn handle_sources(
 
     use super::ActionData::*;
     let mut bindings = Vec::new();
-
     for mode in sources {
         let mut try_get_bool_binding = |action_path: &str, input_path: String| {
             try_get_binding(
@@ -951,8 +978,11 @@ fn handle_sources(
                     ButtonInput {
                         click: ActionBindingOutput { output },
                     },
+                _parameters,
             } => {
-                let Some(translated) = path_translator(&format!("{path}/click")) else {
+                let Ok(translated) =
+                    path_translator(&format!("{path}/click")).inspect_err(translate_warn(output))
+                else {
                     continue;
                 };
 
@@ -963,11 +993,18 @@ fn handle_sources(
                 inputs,
                 parameters,
             } => {
-                let Some(parent_translated) = path_translator(path) else {
+                let Ok(parent_translated) =
+                    path_translator(path).inspect_err(translate_warn(&format!("{inputs:?}")))
+                else {
                     continue;
                 };
                 let data = handle_dpad_action(
-                    |s| path_translator(s).map(|s| instance.string_to_path(&s).unwrap()),
+                    |s| {
+                        path_translator(s)
+                            .inspect_err(translate_warn("<dpad action>"))
+                            .ok()
+                            .map(|s| instance.string_to_path(&s).unwrap())
+                    },
                     &parent_translated,
                     action_set_name,
                     action_set,
@@ -986,7 +1023,9 @@ fn handle_sources(
                     .into_iter()
                     .filter_map(|(sfx, input)| Some(sfx).zip(input.as_ref().map(|i| &i.output)));
                 for (suffix, output) in suffixes_and_outputs {
-                    let Some(translated) = path_translator(&format!("{path}/{suffix}")) else {
+                    let Ok(translated) = path_translator(&format!("{path}/{suffix}"))
+                        .inspect_err(translate_warn(output))
+                    else {
                         continue;
                     };
 
@@ -1003,9 +1042,68 @@ fn handle_sources(
                     );
                 }
             }
+            ActionBinding::ScalarConstant {
+                path,
+                inputs:
+                    ScalarConstantInput {
+                        value: ActionBindingOutput { output },
+                    },
+            } => {
+                let vpath = format!("{path}/value");
+                let Ok(translated) = path_translator(&vpath)
+                    .or_else(|_| {
+                        trace!("Invalid scalar constant path {vpath}, trying click");
+                        path_translator(&format!("{path}/click"))
+                    })
+                    .inspect_err(translate_warn(output))
+                else {
+                    continue;
+                };
+
+                try_get_binding(
+                    actions,
+                    instance,
+                    output.to_string(),
+                    translated,
+                    action_match! {
+                        Vector1 { .. },
+                        "Expected Vector1 action for {}",
+                        output
+                    },
+                    &mut bindings,
+                )
+            }
+            ActionBinding::ForceSensor {
+                path,
+                inputs:
+                    ForceSensorInput {
+                        force: ActionBindingOutput { output },
+                    },
+            } => {
+                let Ok(translated) =
+                    path_translator(&format!("{path}/force")).inspect_err(translate_warn(output))
+                else {
+                    continue;
+                };
+
+                try_get_binding(
+                    actions,
+                    instance,
+                    output.to_string(),
+                    translated,
+                    action_match! {
+                        Vector1 { .. },
+                        "Expected Vector1 action for {}",
+                        output
+                    },
+                    &mut bindings,
+                );
+            }
             ActionBinding::Trackpad(data) | ActionBinding::Joystick(data) => {
                 let Vector2Mode { path, inputs } = data;
-                let Some(translated) = path_translator(path) else {
+                let Ok(translated) =
+                    path_translator(path).inspect_err(translate_warn("<vector2 input>"))
+                else {
                     continue;
                 };
 
@@ -1016,29 +1114,39 @@ fn handle_sources(
                 } = inputs;
 
                 if let Some((output, click_path)) = click.as_ref().and_then(|b| {
-                    Some(&b.output).zip(path_translator(&format!("{translated}/click")))
+                    Some(&b.output).zip(
+                        path_translator(&format!("{translated}/click"))
+                            .inspect_err(translate_warn(&b.output))
+                            .ok(),
+                    )
                 }) {
                     try_get_bool_binding(output, click_path);
                 }
 
                 if let Some((output, touch_path)) = touch.as_ref().and_then(|b| {
-                    Some(&b.output).zip(path_translator(&format!("{translated}/touch")))
+                    Some(&b.output).zip(
+                        path_translator(&format!("{translated}/touch"))
+                            .inspect_err(translate_warn(&b.output))
+                            .ok(),
+                    )
                 }) {
                     try_get_bool_binding(output, touch_path);
                 }
 
-                try_get_binding(
-                    actions,
-                    instance,
-                    position.output.clone(),
-                    translated.clone(),
-                    action_match!(
-                        Vector2 { .. },
-                        "Expected Vector2 action for {}",
-                        position.output
-                    ),
-                    &mut bindings,
-                );
+                if let Some(position) = position.as_ref() {
+                    try_get_binding(
+                        actions,
+                        instance,
+                        position.output.clone(),
+                        translated.clone(),
+                        action_match!(
+                            Vector2 { .. },
+                            "Expected Vector2 action for {}",
+                            position.output
+                        ),
+                        &mut bindings,
+                    );
+                }
             }
         }
     }
@@ -1082,14 +1190,14 @@ fn handle_skeleton_bindings(
 
 fn handle_haptic_bindings(
     instance: &xr::Instance,
-    path_translator: impl Fn(&str) -> Option<String>,
+    path_translator: impl Fn(&str) -> Result<String, String>,
     actions: &LoadedActionDataMap,
     bindings: &[SimpleActionBinding],
 ) -> Vec<(String, xr::Path)> {
     let mut ret = Vec::new();
 
     for SimpleActionBinding { output, path } in bindings {
-        let Some(translated) = path_translator(&path) else {
+        let Ok(translated) = path_translator(&path).inspect_err(translate_warn(output)) else {
             continue;
         };
         if !find_action(actions, output) {
@@ -1111,14 +1219,14 @@ fn handle_haptic_bindings(
 
 fn handle_pose_bindings(
     instance: &xr::Instance,
-    path_translator: impl Fn(&str) -> Option<String>,
+    path_translator: impl Fn(&str) -> Result<String, String>,
     actions: &LoadedActionDataMap,
     bindings: &[SimpleActionBinding],
 ) -> Vec<(String, xr::Path)> {
     let mut ret = Vec::new();
 
     for SimpleActionBinding { output, path } in bindings {
-        let Some(translated) = path_translator(&path) else {
+        let Ok(translated) = path_translator(&path).inspect_err(translate_warn(output)) else {
             continue;
         };
 
@@ -1138,6 +1246,7 @@ fn handle_pose_bindings(
 pub(super) struct PathTranslation {
     pub from: &'static str,
     pub to: &'static str,
+    pub stop: bool,
 }
 
 pub(super) trait InteractionProfile {
