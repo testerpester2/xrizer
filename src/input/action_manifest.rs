@@ -453,7 +453,7 @@ struct ButtonInput {
 #[derive(Deserialize)]
 struct ButtonParameters {
     #[serde(rename = "force_input")]
-    _force_input: String,
+    _force_input: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -1153,7 +1153,11 @@ fn handle_sources(
                     instance,
                     output.to_string(),
                     translated,
-                    action_match! { Vector1 { .. }, "Expected Vector1 action for {}", output},
+                    action_match!(
+                        Bool(_) | Vector1 { .. },
+                        "Grab action {} should be a bool or float",
+                        output
+                    ),
                     &mut bindings,
                 );
             }

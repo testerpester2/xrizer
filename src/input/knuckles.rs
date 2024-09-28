@@ -14,6 +14,11 @@ impl InteractionProfile for Knuckles {
             stop: true,
         },
         PathTranslation {
+            from: "pose/gdc2015",
+            to: "input/grip/pose",
+            stop: true,
+        },
+        PathTranslation {
             from: "pull",
             to: "value",
             stop: true,
