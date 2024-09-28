@@ -836,6 +836,7 @@ fn handle_dpad_action(
                 parent: parent_action.clone(),
                 click_or_touch: click_or_touch.as_ref().map(|d| d.action.clone()),
                 direction,
+                last_state: false.into(),
             })
         }
 

@@ -20,7 +20,7 @@ use std::f32::consts::PI;
 use std::ffi::{c_char, CStr, CString};
 use std::path::PathBuf;
 use std::sync::{
-    atomic::{AtomicU32, Ordering},
+    atomic::{AtomicBool, AtomicU32, Ordering},
     Arc, OnceLock, RwLock,
 };
 
@@ -128,6 +128,7 @@ struct DpadData {
     parent: xr::Action<xr::Vector2f>,
     click_or_touch: Option<xr::Action<bool>>,
     direction: DpadDirection,
+    last_state: AtomicBool,
 }
 
 impl BoolActionData {
@@ -140,6 +141,7 @@ impl BoolActionData {
             parent,
             click_or_touch,
             direction,
+            last_state,
         }) = &self.dpad_data
         else {
             // non dpad action - just use boolean
@@ -149,7 +151,7 @@ impl BoolActionData {
         let mut ret_state = xr::ActionState {
             current_state: false,
             last_change_time: parent_state.last_change_time, // TODO: this is wrong
-            changed_since_last_sync: parent_state.changed_since_last_sync, // TODO: this is wrong
+            changed_since_last_sync: false,
             is_active: parent_state.is_active,
         };
 
@@ -195,6 +197,12 @@ impl BoolActionData {
         };
 
         ret_state.current_state = in_bounds;
+        if last_state
+            .compare_exchange(!in_bounds, in_bounds, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            ret_state.changed_since_last_sync = true;
+        }
 
         Ok(ret_state)
     }
@@ -721,7 +729,7 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
                 bState: state.current_state,
                 activeOrigin: 0, // TODO
                 bChanged: state.changed_since_last_sync,
-                fUpdateTime: 0.0, // TODO
+                fUpdateTime: -1.0, // TODO
             });
         }
 

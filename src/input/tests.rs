@@ -364,14 +364,23 @@ fn input_state_flow() {
 
     let state = f.get_bool_state(boolact).unwrap();
     assert_eq!(state.bState, false);
+    assert_eq!(state.bActive, true);
+    assert_eq!(state.bChanged, false);
+
+    f.sync(vr::VRActiveActionSet_t {
+        ulActionSet: set1,
+        ..Default::default()
+    });
+
+    let state = f.get_bool_state(boolact).unwrap();
+    assert_eq!(state.bState, false);
+    assert_eq!(state.bActive, true);
+    assert_eq!(state.bChanged, false);
 
     fakexr::set_action_state(
         f.get_action::<bool>(boolact),
         fakexr::ActionState::Bool(true),
     );
-
-    let state = f.get_bool_state(boolact).unwrap();
-    assert_eq!(state.bState, false);
 
     f.sync(vr::VRActiveActionSet_t {
         ulActionSet: set1,
@@ -380,6 +389,8 @@ fn input_state_flow() {
 
     let state = f.get_bool_state(boolact).unwrap();
     assert_eq!(state.bState, true);
+    assert_eq!(state.bActive, true);
+    assert_eq!(state.bChanged, true);
 }
 
 #[test]
@@ -449,6 +460,17 @@ fn dpad_input() {
     let state = f.get_bool_state(boolact).unwrap();
     assert_eq!(state.bActive, true);
     assert_eq!(state.bState, true);
+    assert_eq!(state.bChanged, true);
+
+    f.sync(vr::VRActiveActionSet_t {
+        ulActionSet: set1,
+        ..Default::default()
+    });
+
+    let state = f.get_bool_state(boolact).unwrap();
+    assert_eq!(state.bActive, true);
+    assert_eq!(state.bState, true);
+    assert_eq!(state.bChanged, false);
 
     fakexr::set_action_state(
         dpad_data.parent.as_raw(),
@@ -462,6 +484,7 @@ fn dpad_input() {
     let state = f.get_bool_state(boolact).unwrap();
     assert_eq!(state.bActive, true);
     assert_eq!(state.bState, false);
+    assert_eq!(state.bChanged, true);
 }
 
 #[test]

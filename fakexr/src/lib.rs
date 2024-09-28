@@ -9,7 +9,7 @@ use std::sync::{
     mpsc, Arc, Mutex, OnceLock, RwLock, Weak,
 };
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub enum ActionState {
     Bool(bool),
     Pose,
@@ -291,6 +291,7 @@ struct Action {
     name: CString,
     localized_name: CString,
     state: AtomicCell<ActionState>,
+    changed: AtomicBool,
     pending_state: AtomicCell<Option<ActionState>>,
     suggested: Mutex<HashMap<Arc<Path>, Vec<Arc<Path>>>>,
 }
@@ -448,6 +449,7 @@ extern "system" fn create_action(
     let a = Arc::new(Action {
         debug: Action::DEBUG_VAL,
         name: name.to_owned(),
+        changed: false.into(),
         localized_name: CStr::from_bytes_until_nul(unsafe {
             std::slice::from_raw_parts(
                 info.localized_action_name.as_ptr() as _,
@@ -679,8 +681,17 @@ extern "system" fn sync_actions(
         set.active.store(true, Ordering::Relaxed);
 
         for action in actions {
-            if let Some(state) = action.pending_state.take() {
-                action.state.store(state);
+            match action.pending_state.take() {
+                Some(new_state) => {
+                    let old_state = action.state.load();
+                    if old_state != new_state {
+                        action.changed.store(true, Ordering::Relaxed);
+                        action.state.store(new_state);
+                    }
+                }
+                None => {
+                    action.changed.store(false, Ordering::Relaxed);
+                }
             }
         }
     }
@@ -721,7 +732,8 @@ extern "system" fn get_action_state_boolean(
     if set.active.load(Ordering::Relaxed) {
         state.is_active = true.into();
         state.current_state = b.into();
-    } else {
+        state.changed_since_last_sync = action.changed.load(Ordering::Relaxed).into();
+   } else {
         state.is_active = false.into();
         state.current_state = false.into();
     }
