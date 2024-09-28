@@ -435,6 +435,12 @@ enum ActionBinding {
         path: String,
         inputs: ForceSensorInput,
     },
+    Grab {
+        path: String,
+        inputs: GrabInput,
+        #[serde(rename = "parameters")]
+        _parameters: Option<GrabParameters>,
+    },
     Trackpad(Vector2Mode),
     Joystick(Vector2Mode),
 }
@@ -510,6 +516,35 @@ struct ScalarConstantInput {
 #[derive(Deserialize)]
 struct ForceSensorInput {
     force: ActionBindingOutput,
+}
+
+#[derive(Deserialize)]
+struct GrabInput {
+    grab: ActionBindingOutput,
+}
+
+#[derive(Deserialize)]
+struct GrabParameters {
+    #[serde(
+        default,
+        rename = "value_hold_threshold",
+        deserialize_with = "grab_threshold"
+    )]
+    _value_hold_threshold: Option<f32>,
+    #[serde(
+        default,
+        rename = "value_release_threshold",
+        deserialize_with = "grab_threshold"
+    )]
+    _value_release_threshold: Option<f32>,
+}
+
+fn grab_threshold<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<f32>, D::Error> {
+    let val: &str = Deserialize::deserialize(d)?;
+    match val.parse() {
+        Ok(v) => Ok(Some(v)),
+        Err(e) => Err(D::Error::custom(e)),
+    }
 }
 
 #[derive(Deserialize)]
@@ -1096,6 +1131,29 @@ fn handle_sources(
                         "Expected Vector1 action for {}",
                         output
                     },
+                    &mut bindings,
+                );
+            }
+            ActionBinding::Grab {
+                path,
+                inputs:
+                    GrabInput {
+                        grab: ActionBindingOutput { output },
+                    },
+                _parameters,
+            } => {
+                let Ok(translated) =
+                    path_translator(&format!("{path}/grab")).inspect_err(translate_warn(output))
+                else {
+                    continue;
+                };
+
+                try_get_binding(
+                    actions,
+                    instance,
+                    output.to_string(),
+                    translated,
+                    action_match! { Vector1 { .. }, "Expected Vector1 action for {}", output},
                     &mut bindings,
                 );
             }

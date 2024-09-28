@@ -166,6 +166,16 @@
 				},
 				{
 					"inputs": {
+						"grab": {
+							"output": "/actions/set1/in/vec1act"
+						}
+					},
+					"mode": "grab",
+					"path": "/user/hand/right/input/grip",
+					"parameters": {}
+				},
+				{
+					"inputs": {
 						"position": {
 							"output": "/actions/set1/in/vec2act"
 						}
