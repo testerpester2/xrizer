@@ -3,6 +3,7 @@ use crate::{
     vr,
     vulkan::VulkanData,
 };
+use glam::f32::{Quat, Vec3};
 use log::info;
 use openxr as xr;
 use std::mem::ManuallyDrop;
@@ -188,6 +189,65 @@ impl<C: Compositor> OpenXrData<C> {
         self.session_data.get().current_origin
     }
 
+    pub fn reset_tracking_space(&self, origin: vr::ETrackingUniverseOrigin) {
+        let mut guard = self.session_data.0.write().unwrap();
+        let SessionData {
+            session,
+            view_space,
+            local_space_reference,
+            local_space_adjusted,
+            stage_space_reference,
+            stage_space_adjusted,
+            ..
+        } = &mut **guard;
+
+        let reset_space = |ref_space, adjusted_space: &mut xr::Space, ty| {
+            let xr::Posef {
+                position,
+                orientation,
+            } = view_space
+                .locate(ref_space, self.display_time.get())
+                .unwrap()
+                .pose;
+
+            // Only set the rotation around the y axis
+            let (twist, _) = swing_twist_decomposition(
+                Quat::from_xyzw(orientation.x, orientation.y, orientation.z, orientation.w),
+                Vec3::Y,
+            )
+            .unwrap();
+
+            *adjusted_space = session
+                .create_reference_space(
+                    ty,
+                    xr::Posef {
+                        position,
+                        orientation: xr::Quaternionf {
+                            x: twist.x,
+                            y: twist.y,
+                            z: twist.z,
+                            w: twist.w,
+                        },
+                    },
+                )
+                .unwrap();
+        };
+
+        match origin {
+            vr::ETrackingUniverseOrigin::TrackingUniverseRawAndUncalibrated => unimplemented!(),
+            vr::ETrackingUniverseOrigin::TrackingUniverseStanding => reset_space(
+                stage_space_reference,
+                stage_space_adjusted,
+                xr::ReferenceSpaceType::STAGE,
+            ),
+            vr::ETrackingUniverseOrigin::TrackingUniverseSeated => reset_space(
+                local_space_reference,
+                local_space_adjusted,
+                xr::ReferenceSpaceType::LOCAL,
+            ),
+        };
+    }
+
     fn end_session(&self) {
         self.session_data.get().session.request_exit().unwrap();
         let mut state = self.session_data.get().state;
@@ -228,8 +288,14 @@ pub struct SessionData {
     pub session: xr::Session<xr::vulkan::Vulkan>,
     pub state: xr::SessionState,
     pub view_space: xr::Space,
-    local_space: xr::Space,
-    stage_space: xr::Space,
+    // The "reference" space is always equivalent to the reference space with an identity offset.
+    // The "adjusted" space may have an offset, set by reset_tracking_space.
+    // The adjusted spaces should be used for locating things - the reference spaces are only
+    // needed for reset_tracking_space
+    local_space_reference: xr::Space,
+    local_space_adjusted: xr::Space,
+    stage_space_reference: xr::Space,
+    stage_space_adjusted: xr::Space,
     pub current_origin: vr::ETrackingUniverseOrigin,
 
     pub input_data: crate::input::InputSessionData,
@@ -287,12 +353,16 @@ impl SessionData {
         let view_space = session
             .create_reference_space(xr::ReferenceSpaceType::VIEW, xr::Posef::IDENTITY)
             .unwrap();
-        let local_space = session
-            .create_reference_space(xr::ReferenceSpaceType::LOCAL, xr::Posef::IDENTITY)
-            .unwrap();
-        let stage_space = session
-            .create_reference_space(xr::ReferenceSpaceType::STAGE, xr::Posef::IDENTITY)
-            .unwrap();
+        let [local_space_reference, local_space_adjusted] = std::array::from_fn(|_| {
+            session
+                .create_reference_space(xr::ReferenceSpaceType::LOCAL, xr::Posef::IDENTITY)
+                .unwrap()
+        });
+        let [stage_space_reference, stage_space_adjusted] = std::array::from_fn(|_| {
+            session
+                .create_reference_space(xr::ReferenceSpaceType::STAGE, xr::Posef::IDENTITY)
+                .unwrap()
+        });
 
         let mut buf = xr::EventDataBuffer::new();
         loop {
@@ -321,8 +391,10 @@ impl SessionData {
                 session,
                 state: xr::SessionState::READY,
                 view_space,
-                local_space,
-                stage_space,
+                local_space_reference,
+                local_space_adjusted,
+                stage_space_reference,
+                stage_space_adjusted,
                 input_data: Default::default(),
                 comp_data: Default::default(),
                 current_origin,
@@ -338,8 +410,8 @@ impl SessionData {
 
     pub fn get_space_for_origin(&self, origin: vr::ETrackingUniverseOrigin) -> &xr::Space {
         match origin {
-            vr::ETrackingUniverseOrigin::TrackingUniverseSeated => &self.local_space,
-            vr::ETrackingUniverseOrigin::TrackingUniverseStanding => &self.stage_space,
+            vr::ETrackingUniverseOrigin::TrackingUniverseSeated => &self.local_space_adjusted,
+            vr::ETrackingUniverseOrigin::TrackingUniverseStanding => &self.stage_space_adjusted,
             vr::ETrackingUniverseOrigin::TrackingUniverseRawAndUncalibrated => unreachable!(),
         }
     }
@@ -401,5 +473,39 @@ impl TryFrom<vr::TrackedDeviceIndex_t> for Hand {
             x if x == Hand::Right as u32 => Ok(Hand::Right),
             _ => Err(()),
         }
+    }
+}
+
+/// Taken from: https://github.com/bitshifter/glam-rs/issues/536
+/// Decompose the rotation on to 2 parts.
+///
+/// 1. Twist - rotation around the "direction" vector
+/// 2. Swing - rotation around axis that is perpendicular to "direction" vector
+///
+/// The rotation can be composed back by
+/// `rotation = swing * twist`.
+/// Order matters!
+///
+/// has singularity in case of swing_rotation close to 180 degrees rotation.
+/// if the input quaternion is of non-unit length, the outputs are non-unit as well
+/// otherwise, outputs are both unit
+fn swing_twist_decomposition(rotation: Quat, axis: Vec3) -> Option<(Quat, Quat)> {
+    let rotation_axis = rotation.xyz();
+    let projection = rotation_axis.project_onto(axis);
+
+    let twist = {
+        let maybe_flipped_twist = Quat::from_vec4(projection.extend(rotation.w));
+        if rotation_axis.dot(projection) < 0.0 {
+            -maybe_flipped_twist
+        } else {
+            maybe_flipped_twist
+        }
+    };
+
+    if twist.length_squared() != 0.0 {
+        let swing = rotation * twist.conjugate();
+        Some((twist.normalize(), swing))
+    } else {
+        None
     }
 }

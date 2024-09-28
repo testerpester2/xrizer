@@ -208,7 +208,7 @@ impl IVRClientCore003_Interface for ClientCore {
             .or_else(|| self.try_interface(interface, |_| Input::new(openxr.clone())))
             .or_else(|| self.try_interface(interface, |_| RenderModels::default()))
             .or_else(|| self.try_interface(interface, |_| OverlayMan::default()))
-            .or_else(|| self.try_interface(interface, |_| Chaperone::default()))
+            .or_else(|| self.try_interface(interface, |_| Chaperone::new(openxr.clone())))
             .or_else(|| self.try_interface(interface, |_| Applications::default()))
             .or_else(|| self.try_interface(interface, |_| OverlayView::default()))
             .or_else(|| self.try_interface(interface, |_| Screenshots::default()))

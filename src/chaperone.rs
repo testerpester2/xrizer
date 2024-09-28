@@ -1,16 +1,28 @@
-use crate::vr;
+use crate::{openxr_data::RealOpenXrData, vr};
+use std::sync::Arc;
 
-#[derive(Default, macros::InterfaceImpl)]
+#[derive(macros::InterfaceImpl)]
 #[interface = "IVRChaperone"]
 #[versions(004, 003)]
 pub struct Chaperone {
     vtables: Vtables,
+    openxr: Arc<RealOpenXrData>,
+}
+
+impl Chaperone {
+    pub fn new(openxr: Arc<RealOpenXrData>) -> Self {
+        Self {
+            vtables: Default::default(),
+            openxr,
+        }
+    }
 }
 
 impl vr::IVRChaperone004_Interface for Chaperone {
-    fn ResetZeroPose(&self, _: vr::ETrackingUniverseOrigin) {
-        crate::warn_unimplemented!("ResetZeroPose");
+    fn ResetZeroPose(&self, origin: vr::ETrackingUniverseOrigin) {
+        self.openxr.reset_tracking_space(origin);
     }
+
     fn ForceBoundsVisible(&self, _: bool) {
         todo!()
     }
