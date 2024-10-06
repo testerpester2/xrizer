@@ -36,7 +36,7 @@ impl InteractionProfile for Knuckles {
         PathTranslation {
             from: "squeeze/grab",
             to: "squeeze/force",
-            stop: true
+            stop: true,
         },
         PathTranslation {
             from: "trackpad/click",

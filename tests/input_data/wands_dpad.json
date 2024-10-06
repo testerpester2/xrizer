@@ -11,7 +11,8 @@
 					"mode": "dpad",
 					"path": "/user/hand/left/input/trackpad",
 					"parameters": {
-						"sub_mode": "click"
+						"sub_mode": "click",
+						"sticky": "true"
 					}
 				}
 			]

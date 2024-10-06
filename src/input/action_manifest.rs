@@ -434,6 +434,8 @@ enum ActionBinding {
     ForceSensor {
         path: String,
         inputs: ForceSensorInput,
+        #[serde(rename = "parameters")]
+        _parameters: Option<ForceSensorParameters>,
     },
     Grab {
         path: String,
@@ -441,13 +443,19 @@ enum ActionBinding {
         #[serde(rename = "parameters")]
         _parameters: Option<GrabParameters>,
     },
+    Scroll {
+        path: String,
+        inputs: ScrollInput,
+        parameters: Option<ScrollParameters>,
+    },
     Trackpad(Vector2Mode),
     Joystick(Vector2Mode),
 }
 
 #[derive(Deserialize)]
 struct ButtonInput {
-    click: ActionBindingOutput,
+    click: Option<ActionBindingOutput>,
+    double: Option<ActionBindingOutput>,
 }
 
 #[derive(Deserialize)]
@@ -473,6 +481,7 @@ struct DpadParameters {
     deadzone_pct: u8,
     #[serde(deserialize_with = "parse_pct")]
     overlap_pct: u8,
+    #[serde(deserialize_with = "as_bool")]
     sticky: bool,
 }
 
@@ -501,6 +510,18 @@ fn parse_pct<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u8, D::Error> {
     })
 }
 
+fn as_bool<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    let val: &str = Deserialize::deserialize(d)?;
+    match val {
+        "true" => Ok(true),
+        "false" => Ok(false),
+        other => Err(D::Error::invalid_value(
+            Unexpected::Str(other),
+            &"true or false",
+        )),
+    }
+}
+
 #[derive(Deserialize)]
 struct TriggerInput {
     pull: Option<ActionBindingOutput>,
@@ -516,6 +537,12 @@ struct ScalarConstantInput {
 #[derive(Deserialize)]
 struct ForceSensorInput {
     force: ActionBindingOutput,
+}
+
+#[derive(Deserialize)]
+struct ForceSensorParameters {
+    #[allow(unused)]
+    haptic_amplitude: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -545,6 +572,17 @@ fn grab_threshold<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<f32>,
         Ok(v) => Ok(Some(v)),
         Err(e) => Err(D::Error::custom(e)),
     }
+}
+
+#[derive(Deserialize)]
+struct ScrollInput {
+    scroll: ActionBindingOutput,
+}
+
+#[derive(Deserialize)]
+struct ScrollParameters {
+    scroll_mode: Option<String>,
+    smooth_scroll_multiplier: Option<String>, // float
 }
 
 #[derive(Deserialize)]
@@ -597,10 +635,11 @@ impl<C: openxr_data::Compositor> Input<C> {
         bindings: Vec<DefaultBindings>,
         legacy_actions: &super::LegacyActions,
     ) {
-        for DefaultBindings {
+        let mut it: Box<dyn Iterator<Item = DefaultBindings>> = Box::new(bindings.into_iter());
+        while let Some(DefaultBindings {
             binding_url,
             controller_type,
-        } in bindings
+        }) = it.next()
         {
             let load_bindings = || {
                 let bindings_path = parent_path.join(binding_url);
@@ -636,10 +675,19 @@ impl<C: openxr_data::Compositor> Input<C> {
             match controller_type {
                 ControllerType::ViveController => load_bindings!(ViveWands),
                 ControllerType::Knuckles => load_bindings!(Knuckles),
-                ControllerType::Unknown(other) => {
+                ControllerType::Unknown(ref other) => {
                     warn!("Ignoring bindings for unknown profile {other}")
                 }
             }
+
+            it = Box::new(it.skip_while(move |b| {
+                if b.controller_type == controller_type {
+                    debug!("skipping bindings in {:?}", b.binding_url);
+                    true
+                } else {
+                    false
+                }
+            }));
         }
     }
 
@@ -1010,19 +1058,22 @@ fn handle_sources(
             ActionBinding::None(_) => {}
             ActionBinding::Button {
                 path,
-                inputs:
-                    ButtonInput {
-                        click: ActionBindingOutput { output },
-                    },
+                inputs,
                 _parameters,
             } => {
-                let Ok(translated) =
-                    path_translator(&format!("{path}/click")).inspect_err(translate_warn(output))
-                else {
-                    continue;
-                };
+                if let Some(ActionBindingOutput { output }) = &inputs.click {
+                    let Ok(translated) = path_translator(&format!("{path}/click"))
+                        .inspect_err(translate_warn(output))
+                    else {
+                        continue;
+                    };
 
-                try_get_bool_binding(output, translated);
+                    try_get_bool_binding(output, translated);
+                }
+
+                if let Some(ActionBindingOutput { output }) = &inputs.double {
+                    warn!("Double click binding for {output} currently unsupported.");
+                }
             }
             ActionBinding::Dpad {
                 path,
@@ -1115,6 +1166,7 @@ fn handle_sources(
                     ForceSensorInput {
                         force: ActionBindingOutput { output },
                     },
+                _parameters,
             } => {
                 let Ok(translated) =
                     path_translator(&format!("{path}/force")).inspect_err(translate_warn(output))
@@ -1161,6 +1213,13 @@ fn handle_sources(
                     ),
                     &mut bindings,
                 );
+            }
+            ActionBinding::Scroll {
+                path: _,
+                inputs,
+                parameters: _,
+            } => {
+                warn!("Got scroll binding for input {}, but these are currently unimplemented, skipping", inputs.scroll.output);
             }
             ActionBinding::Trackpad(data) | ActionBinding::Joystick(data) => {
                 let Vector2Mode { path, inputs } = data;
