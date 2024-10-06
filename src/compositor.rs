@@ -16,6 +16,7 @@ struct FrameController {
     waiter: xr::FrameWaiter,
     swapchain: xr::Swapchain<xr::vulkan::Vulkan>,
     image_index: usize,
+    image_acquired: bool,
     should_render: bool,
     eyes_submitted: [Option<SubmittedEye>; 2],
 }
@@ -73,6 +74,10 @@ impl Compositor {
             return;
         };
 
+        if ctrl.image_acquired {
+            ctrl.swapchain.release_image().unwrap();
+        }
+
         ctrl.image_index = ctrl
             .swapchain
             .acquire_image()
@@ -83,6 +88,7 @@ impl Compositor {
             .wait_image(xr::Duration::INFINITE)
             .expect("Failed to wait for swapchain image");
 
+        ctrl.image_acquired = true;
         let frame_state = ctrl.waiter.wait().unwrap();
         ctrl.should_render = frame_state.should_render;
         self.openxr
@@ -145,6 +151,7 @@ impl openxr_data::Compositor for Compositor {
             waiter,
             swapchain,
             image_index: 0,
+            image_acquired: false,
             should_render: false,
             eyes_submitted: Default::default(),
         });
@@ -449,7 +456,7 @@ impl vr::IVRCompositor028_Interface for Compositor {
             let backend = &self.backend.get().unwrap();
             let last_info = self.swapchain_create_info.load();
             if !backend.is_usable_swapchain(&last_info, texture, bounds) {
-                info!("recreating swapchain");
+                info!("recreating swapchain (for {eye:?})");
                 self.swapchain_create_info
                     .store(backend.get_swapchain_create_info(texture, bounds).into());
                 let FrameController { stream, waiter, .. } = frame_lock.take().unwrap();
@@ -489,6 +496,7 @@ impl vr::IVRCompositor028_Interface for Compositor {
 
         trace!("releasing image");
         ctrl.swapchain.release_image().unwrap();
+        ctrl.image_acquired = false;
 
         let mut layers = Vec::new();
         if ctrl.should_render {
@@ -781,14 +789,6 @@ mod tests {
         pub fn as_session_create_info(&self) -> xr::vulkan::SessionCreateInfo {
             self.0.as_session_create_info()
         }
-
-        pub fn copy(&self, texture: &vr::Texture_t) -> xr::Extent2Di {
-            assert_eq!(texture.eType, vr::ETextureType::TextureType_Reserved);
-            xr::Extent2Di {
-                width: 100,
-                height: 100,
-            }
-        }
     }
 
     struct Fixture {
@@ -804,6 +804,24 @@ mod tests {
             xr.compositor.set(Arc::downgrade(&comp));
 
             Self { comp, vk }
+        }
+
+        pub fn wait_get_poses(&self) -> vr::EVRCompositorError {
+            self.comp.WaitGetPoses(
+                &mut vr::TrackedDevicePose_t::default(),
+                1,
+                std::ptr::null_mut(),
+                0,
+            )
+        }
+
+        pub fn submit(&self, eye: vr::EVREye) -> vr::EVRCompositorError {
+            self.comp.Submit(
+                eye,
+                &FakeGraphicsData::texture(&self.vk),
+                std::ptr::null(),
+                vr::EVRSubmitFlags::Submit_Default,
+            )
         }
     }
 
@@ -878,34 +896,29 @@ mod tests {
 
     #[test]
     fn error_on_submit_without_waitgetposes() {
-        let Fixture { comp, vk } = Fixture::new();
+        let f = Fixture::new();
 
-        let wait = || {
-            comp.WaitGetPoses(
-                &mut vr::TrackedDevicePose_t::default(),
-                1,
-                std::ptr::null_mut(),
-                0,
-            )
-        };
-        let submit = |eye| {
-            comp.Submit(
-                eye,
-                &FakeGraphicsData::texture(&vk),
-                std::ptr::null(),
-                vr::EVRSubmitFlags::Submit_Default,
-            )
-        };
-
-        assert_eq!(wait(), VRCompositorError_None);
-        assert_eq!(submit(vr::EVREye::Eye_Left), VRCompositorError_None);
-        assert_eq!(submit(vr::EVREye::Eye_Right), VRCompositorError_None);
+        assert_eq!(f.wait_get_poses(), VRCompositorError_None);
+        assert_eq!(f.submit(vr::EVREye::Eye_Left), VRCompositorError_None);
+        assert_eq!(f.submit(vr::EVREye::Eye_Right), VRCompositorError_None);
         assert_eq!(
-            submit(vr::EVREye::Eye_Left),
+            f.submit(vr::EVREye::Eye_Left),
             VRCompositorError_AlreadySubmitted
         );
 
-        assert_eq!(wait(), VRCompositorError_None);
-        assert_eq!(submit(vr::EVREye::Eye_Left), VRCompositorError_None);
+        assert_eq!(f.wait_get_poses(), VRCompositorError_None);
+        assert_eq!(f.submit(vr::EVREye::Eye_Left), VRCompositorError_None);
+    }
+
+    #[test]
+    fn allow_waitgetposes_without_submit() {
+        let f = Fixture::new();
+
+        // Enable frame controller
+        assert_eq!(f.wait_get_poses(), VRCompositorError_None);
+        assert_eq!(f.submit(vr::EVREye::Eye_Left), VRCompositorError_None);
+
+        assert_eq!(f.wait_get_poses(), VRCompositorError_None);
+        assert_eq!(f.wait_get_poses(), VRCompositorError_None);
     }
 }
