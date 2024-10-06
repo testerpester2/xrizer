@@ -12,11 +12,14 @@ use crate::{
     vr,
 };
 use action_manifest::InteractionProfile;
+use glam::{Affine3A, Quat, Vec3, Vec3A};
 use log::{debug, info, trace, warn};
 use openxr as xr;
+use paste::paste;
 use slotmap::{new_key_type, Key, KeyData, SecondaryMap, SlotMap};
+use std::cell::RefCell;
 use std::collections::HashMap;
-use std::f32::consts::PI;
+use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI};
 use std::ffi::{c_char, CStr, CString};
 use std::path::PathBuf;
 use std::sync::{
@@ -106,6 +109,7 @@ enum ActionData {
         action: xr::Action<xr::Posef>,
         space: xr::Space,
         hand: Hand,
+        hand_tracker: Option<xr::HandTracker>,
     },
     Haptic(xr::Action<xr::Haptic>),
 }
@@ -181,17 +185,19 @@ impl BoolActionData {
         // pi/2 wedges, no overlap
         let in_bounds = match direction {
             DpadDirection::North => {
-                radius >= CENTER_ZONE && (PI / 4.0..=3.0 * PI / 4.0).contains(&angle)
+                radius >= CENTER_ZONE && (FRAC_PI_4..=3.0 * FRAC_PI_4).contains(&angle)
             }
-            DpadDirection::East => radius >= CENTER_ZONE && (-PI / 4.0..=PI / 4.0).contains(&angle),
+            DpadDirection::East => {
+                radius >= CENTER_ZONE && (-FRAC_PI_4..=FRAC_PI_4).contains(&angle)
+            }
             DpadDirection::South => {
-                radius >= CENTER_ZONE && (-3.0 * PI / 4.0..=-PI / 4.0).contains(&angle)
+                radius >= CENTER_ZONE && (-3.0 * FRAC_PI_4..=-FRAC_PI_4).contains(&angle)
             }
             // west section is disjoint with atan2
             DpadDirection::West => {
                 radius >= CENTER_ZONE
-                    && ((3.0 * PI / 4.0..=PI).contains(&angle)
-                        || (-PI..=-3.0 * PI / 4.0).contains(&angle))
+                    && ((3.0 * FRAC_PI_4..=PI).contains(&angle)
+                        || (-PI..=-3.0 * FRAC_PI_4).contains(&angle))
             }
             DpadDirection::Center => radius < CENTER_ZONE,
         };
@@ -434,13 +440,197 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
     }
     fn GetSkeletalBoneData(
         &self,
-        _: vr::VRActionHandle_t,
-        _: vr::EVRSkeletalTransformSpace,
-        _: vr::EVRSkeletalMotionRange,
-        _: *mut vr::VRBoneTransform_t,
-        _: u32,
+        handle: vr::VRActionHandle_t,
+        transform_space: vr::EVRSkeletalTransformSpace,
+        _motion_range: vr::EVRSkeletalMotionRange,
+        transform_array: *mut vr::VRBoneTransform_t,
+        transform_array_count: u32,
     ) -> vr::EVRInputError {
-        crate::warn_unimplemented!("GetSkeletalBoneData");
+        assert_eq!(transform_array_count, HandSkeletonBone::Count as u32);
+
+        use HandSkeletonBone::*;
+        let transforms = unsafe {
+            std::slice::from_raw_parts_mut(transform_array, transform_array_count as usize)
+        };
+
+        get_action_from_handle!(self, handle, session_data, action);
+        let ActionData::Skeleton {
+            hand,
+            hand_tracker,
+            space,
+            ..
+        } = action
+        else {
+            return vr::EVRInputError::VRInputError_WrongType;
+        };
+
+        let hand_tracker = hand_tracker.as_ref().expect("hand tracking supported");
+        let Some(joints) = space
+            .locate_hand_joints(hand_tracker, self.openxr.display_time.get())
+            .unwrap()
+        else {
+            warn!("no joints!");
+            return vr::EVRInputError::VRInputError_None;
+        };
+
+        let mut joints: Box<[_]> = joints
+            .into_iter()
+            .map(|joint_location| {
+                let position = joint_location.pose.position;
+                let orientation = joint_location.pose.orientation;
+                Affine3A::from_rotation_translation(
+                    Quat::from_xyzw(orientation.x, orientation.y, orientation.z, orientation.w),
+                    Vec3::from_array([position.x, position.y, position.z]),
+                )
+            })
+            .collect();
+
+        const JOINTS_TO_BONES: &[(xr::HandJoint, HandSkeletonBone)] = &[
+            (xr::HandJoint::PALM, Root),
+            (xr::HandJoint::WRIST, Wrist),
+            //
+            (xr::HandJoint::THUMB_METACARPAL, Thumb0),
+            (xr::HandJoint::THUMB_PROXIMAL, Thumb1),
+            (xr::HandJoint::THUMB_DISTAL, Thumb2),
+            (xr::HandJoint::THUMB_TIP, Thumb3),
+            //
+            (xr::HandJoint::INDEX_METACARPAL, IndexFinger0),
+            (xr::HandJoint::INDEX_PROXIMAL, IndexFinger1),
+            (xr::HandJoint::INDEX_INTERMEDIATE, IndexFinger2),
+            (xr::HandJoint::INDEX_DISTAL, IndexFinger3),
+            (xr::HandJoint::INDEX_TIP, IndexFinger4),
+            //
+            (xr::HandJoint::MIDDLE_METACARPAL, MiddleFinger0),
+            (xr::HandJoint::MIDDLE_PROXIMAL, MiddleFinger1),
+            (xr::HandJoint::MIDDLE_INTERMEDIATE, MiddleFinger2),
+            (xr::HandJoint::MIDDLE_DISTAL, MiddleFinger3),
+            (xr::HandJoint::MIDDLE_TIP, MiddleFinger4),
+            //
+            (xr::HandJoint::RING_METACARPAL, RingFinger0),
+            (xr::HandJoint::RING_PROXIMAL, RingFinger1),
+            (xr::HandJoint::RING_INTERMEDIATE, RingFinger2),
+            (xr::HandJoint::RING_DISTAL, RingFinger3),
+            (xr::HandJoint::RING_TIP, RingFinger4),
+            //
+            (xr::HandJoint::LITTLE_METACARPAL, PinkyFinger0),
+            (xr::HandJoint::LITTLE_PROXIMAL, PinkyFinger1),
+            (xr::HandJoint::LITTLE_INTERMEDIATE, PinkyFinger2),
+            (xr::HandJoint::LITTLE_DISTAL, PinkyFinger3),
+            (xr::HandJoint::LITTLE_TIP, PinkyFinger4),
+        ];
+
+        joints[xr::HandJoint::WRIST] *= Affine3A::from_quat(Quat::from_euler(
+            glam::EulerRot::YXZ,
+            -FRAC_PI_2,
+            FRAC_PI_2,
+            0.0,
+        ));
+        if transform_space == vr::EVRSkeletalTransformSpace::VRSkeletalTransformSpace_Parent {
+            let parent_id = RefCell::new(xr::HandJoint::WRIST);
+            let parented_joints = RefCell::new(joints.clone());
+            let localize = |joint: xr::HandJoint| {
+                let mut parent_id = parent_id.borrow_mut();
+                let mut p = parented_joints.borrow_mut();
+                p[joint] = joints[*parent_id].inverse() * p[joint];
+                *parent_id = joint;
+            };
+
+            //localize(xr::HandJoint::WRIST);
+
+            macro_rules! joints_for_finger {
+                ($finger:ident) => {
+                    paste! {[
+                        xr::HandJoint::[<$finger _METACARPAL>],
+                        xr::HandJoint::[<$finger _PROXIMAL>],
+                        xr::HandJoint::[<$finger _INTERMEDIATE>],
+                        xr::HandJoint::[<$finger _DISTAL>],
+                        xr::HandJoint::[<$finger _TIP>],
+                    ].as_slice()}
+                };
+            }
+
+            for joint_list in [
+                [
+                    xr::HandJoint::THUMB_METACARPAL,
+                    xr::HandJoint::THUMB_PROXIMAL,
+                    xr::HandJoint::THUMB_DISTAL,
+                    xr::HandJoint::THUMB_TIP,
+                ]
+                .as_slice(),
+                joints_for_finger!(INDEX),
+                joints_for_finger!(MIDDLE),
+                joints_for_finger!(RING),
+                joints_for_finger!(LITTLE),
+            ] {
+                for joint in joint_list.iter().copied() {
+                    localize(joint);
+                }
+                *parent_id.borrow_mut() = xr::HandJoint::WRIST;
+            }
+
+            joints = parented_joints.into_inner();
+        }
+
+        transforms[Root as usize] = vr::VRBoneTransform_t {
+            position: vr::HmdVector4_t {
+                v: [0.0, 0.0, 0.0, 1.0],
+            },
+            orientation: vr::HmdQuaternionf_t {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+                w: 1.0,
+            },
+        };
+
+        joints[xr::HandJoint::WRIST] *= match hand {
+            Hand::Left => {
+                Affine3A::from_quat(Quat::from_euler(glam::EulerRot::ZXY, PI, -FRAC_PI_2, 0.0))
+            }
+            Hand::Right => Affine3A::from_rotation_x(-FRAC_PI_2),
+        };
+        for (joint, bone) in JOINTS_TO_BONES.iter().copied().skip(1) {
+            let (_, mut rot, mut pos) = joints[joint].to_scale_rotation_translation();
+
+            std::mem::swap(&mut pos.x, &mut pos.z);
+            pos.z = -pos.z;
+
+            let r = &mut *rot;
+            std::mem::swap(&mut r.x, &mut r.z);
+            rot.z = -rot.z;
+
+            if *hand == Hand::Left {
+                pos.x = -pos.x;
+                pos.y = -pos.y;
+                rot.x = -rot.x;
+                rot.y = -rot.y;
+            }
+
+            transforms[bone as usize] = vr::VRBoneTransform_t {
+                position: vr::HmdVector4_t {
+                    v: [pos.x, pos.y, pos.z, 1.0],
+                },
+                orientation: vr::HmdQuaternionf_t {
+                    x: rot.x,
+                    y: rot.y,
+                    z: rot.z,
+                    w: rot.w,
+                },
+            };
+        }
+
+        //const AUX_JOINTS: &[(HandSkeletonBone, HandSkeletonBone)] = &[
+        //    (AuxThumb, Thumb2),
+        //    (AuxIndexFinger, IndexFinger3),
+        //    (AuxMiddleFinger, MiddleFinger3),
+        //    (AuxRingFinger, RingFinger3),
+        //    (AuxPinkyFinger, PinkyFinger3),
+        //];
+
+        //for (aux, bone) in AUX_JOINTS.iter().copied() {
+        //    transforms[aux as usize] = transforms[bone as usize];
+        //}
+
         vr::EVRInputError::VRInputError_None
     }
     fn GetSkeletalTrackingLevel(
@@ -576,6 +766,7 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
                 action,
                 space,
                 hand,
+                ..
             }) => (
                 action,
                 space,
@@ -1282,4 +1473,41 @@ impl From<f32> for AtomicF32 {
     fn from(value: f32) -> Self {
         Self::new(value)
     }
+}
+
+#[repr(usize)]
+#[derive(Copy, Clone)]
+enum HandSkeletonBone {
+    Root = 0,
+    Wrist,
+    Thumb0,
+    Thumb1,
+    Thumb2,
+    Thumb3,
+    IndexFinger0,
+    IndexFinger1,
+    IndexFinger2,
+    IndexFinger3,
+    IndexFinger4,
+    MiddleFinger0,
+    MiddleFinger1,
+    MiddleFinger2,
+    MiddleFinger3,
+    MiddleFinger4,
+    RingFinger0,
+    RingFinger1,
+    RingFinger2,
+    RingFinger3,
+    RingFinger4,
+    PinkyFinger0,
+    PinkyFinger1,
+    PinkyFinger2,
+    PinkyFinger3,
+    PinkyFinger4,
+    AuxThumb,
+    AuxIndexFinger,
+    AuxMiddleFinger,
+    AuxRingFinger,
+    AuxPinkyFinger,
+    Count,
 }

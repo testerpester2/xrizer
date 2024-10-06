@@ -346,10 +346,23 @@ fn load_actions(
                     )
                     .unwrap();
 
+                let hand_tracker = match session.create_hand_tracker(match hand {
+                    Hand::Left => xr::Hand::LEFT,
+                    Hand::Right => xr::Hand::RIGHT,
+                }) {
+                    Ok(t) => Some(t),
+                    Err(
+                        xr::sys::Result::ERROR_EXTENSION_NOT_PRESENT
+                        | xr::sys::Result::ERROR_FEATURE_UNSUPPORTED,
+                    ) => None,
+                    Err(other) => panic!("Creating hand tracker failed: {other:?}"),
+                };
+
                 Skeleton {
                     action,
                     space,
                     hand,
+                    hand_tracker,
                 }
             }
             ActionType::Vibration => Haptic(

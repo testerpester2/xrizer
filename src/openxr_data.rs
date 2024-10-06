@@ -70,8 +70,12 @@ impl<C: Compositor> OpenXrData<C> {
         let entry =
             unsafe { xr::Entry::from_get_instance_proc_addr(fakexr::get_instance_proc_addr) }
                 .unwrap();
+
+        let supported_exts = entry.enumerate_extensions().unwrap();
         let mut exts = xr::ExtensionSet::default();
-        exts.khr_vulkan_enable = true;
+        exts.khr_vulkan_enable = supported_exts.khr_vulkan_enable;
+        exts.ext_hand_tracking = supported_exts.ext_hand_tracking;
+
         let instance = entry
             .create_instance(
                 &xr::ApplicationInfo {
@@ -92,7 +96,7 @@ impl<C: Compositor> OpenXrData<C> {
             SessionData::new(
                 &instance,
                 system_id,
-                vr::ETrackingUniverseOrigin::TrackingUniverseSeated,
+                vr::ETrackingUniverseOrigin::TrackingUniverseStanding,
                 None,
             )?
             .0,
@@ -458,7 +462,7 @@ impl HandInfo {
 }
 
 #[repr(u32)]
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum Hand {
     Left = 1,
     Right,

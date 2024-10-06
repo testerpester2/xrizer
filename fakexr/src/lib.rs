@@ -121,7 +121,7 @@ pub extern "system" fn get_instance_proc_addr(
 
     if instance == xr::Instance::NULL {
         unsafe {
-            *function = get_fn!([CreateInstance, (EnumerateInstanceExtensionProperties), (EnumerateApiLayerProperties)]
+            *function = get_fn!([CreateInstance, EnumerateInstanceExtensionProperties, (EnumerateApiLayerProperties)]
                 other => {
                     println!("unknown func without instance: {other:?}");
                     return xr::Result::ERROR_HANDLE_INVALID;
@@ -208,6 +208,31 @@ pub extern "system" fn get_instance_proc_addr(
         }
     }
 
+    xr::Result::SUCCESS
+}
+
+extern "system" fn enumerate_instance_extension_properties(
+    layer_name: *const c_char,
+    property_capacity_input: u32,
+    property_count_output: *mut u32,
+    properties: *mut xr::ExtensionProperties,
+) -> xr::Result {
+    assert!(layer_name.is_null());
+    unsafe { *property_count_output = 1 };
+    if property_capacity_input > 0 {
+        let props =
+            unsafe { std::slice::from_raw_parts_mut(properties, property_count_output as usize) };
+        props[0] = xr::ExtensionProperties {
+            ty: xr::ExtensionProperties::TYPE,
+            next: std::ptr::null_mut(),
+            extension_name: [0 as c_char; xr::MAX_EXTENSION_NAME_SIZE],
+            extension_version: 1,
+        };
+        let name = xr::KHR_VULKAN_ENABLE_EXTENSION_NAME;
+        let name =
+            unsafe { std::slice::from_raw_parts(name.as_ptr() as *const c_char, name.len()) };
+        props[0].extension_name[..name.len()].copy_from_slice(name);
+    }
     xr::Result::SUCCESS
 }
 
@@ -733,7 +758,7 @@ extern "system" fn get_action_state_boolean(
         state.is_active = true.into();
         state.current_state = b.into();
         state.changed_since_last_sync = action.changed.load(Ordering::Relaxed).into();
-   } else {
+    } else {
         state.is_active = false.into();
         state.current_state = false.into();
     }
