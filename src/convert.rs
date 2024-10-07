@@ -1,5 +1,5 @@
 use crate::vr;
-use glam::{Mat3, Mat4, Quat, Vec3};
+use glam::{Affine3A, Mat3, Mat4, Quat, Vec3};
 use openxr as xr;
 
 pub fn space_relation_to_openvr_pose(
@@ -60,6 +60,15 @@ impl From<Vec3> for vr::HmdVector3_t {
     }
 }
 
+impl From<Vec3> for vr::HmdVector4_t {
+    fn from(value: Vec3) -> Self {
+        let mut v = <[f32; 4]>::default();
+        v[..3].copy_from_slice(&value.to_array());
+        v[3] = 1.0;
+        Self { v }
+    }
+}
+
 impl From<Quat> for vr::HmdQuaternionf_t {
     fn from(value: Quat) -> Self {
         Self {
@@ -93,6 +102,16 @@ impl From<xr::Posef> for vr::HmdMatrix34_t {
                 gen_array(pose.position.y, rot.y_axis),
                 gen_array(pose.position.z, rot.z_axis),
             ],
+        }
+    }
+}
+
+impl From<Affine3A> for vr::VRBoneTransform_t {
+    fn from(value: Affine3A) -> Self {
+        let (_, rot, pos) = value.to_scale_rotation_translation();
+        Self {
+            position: pos.into(),
+            orientation: rot.into(),
         }
     }
 }

@@ -12,7 +12,7 @@ use crate::{
     vr,
 };
 use action_manifest::InteractionProfile;
-use glam::{Affine3A, Quat, Vec3, Vec3A};
+use glam::{Affine3A, Quat, Vec3};
 use log::{debug, info, trace, warn};
 use openxr as xr;
 use paste::paste;
@@ -485,113 +485,39 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
             })
             .collect();
 
-        const JOINTS_TO_BONES: &[(xr::HandJoint, HandSkeletonBone)] = &[
-            (xr::HandJoint::PALM, Root),
-            (xr::HandJoint::WRIST, Wrist),
-            //
-            (xr::HandJoint::THUMB_METACARPAL, Thumb0),
-            (xr::HandJoint::THUMB_PROXIMAL, Thumb1),
-            (xr::HandJoint::THUMB_DISTAL, Thumb2),
-            (xr::HandJoint::THUMB_TIP, Thumb3),
-            //
-            (xr::HandJoint::INDEX_METACARPAL, IndexFinger0),
-            (xr::HandJoint::INDEX_PROXIMAL, IndexFinger1),
-            (xr::HandJoint::INDEX_INTERMEDIATE, IndexFinger2),
-            (xr::HandJoint::INDEX_DISTAL, IndexFinger3),
-            (xr::HandJoint::INDEX_TIP, IndexFinger4),
-            //
-            (xr::HandJoint::MIDDLE_METACARPAL, MiddleFinger0),
-            (xr::HandJoint::MIDDLE_PROXIMAL, MiddleFinger1),
-            (xr::HandJoint::MIDDLE_INTERMEDIATE, MiddleFinger2),
-            (xr::HandJoint::MIDDLE_DISTAL, MiddleFinger3),
-            (xr::HandJoint::MIDDLE_TIP, MiddleFinger4),
-            //
-            (xr::HandJoint::RING_METACARPAL, RingFinger0),
-            (xr::HandJoint::RING_PROXIMAL, RingFinger1),
-            (xr::HandJoint::RING_INTERMEDIATE, RingFinger2),
-            (xr::HandJoint::RING_DISTAL, RingFinger3),
-            (xr::HandJoint::RING_TIP, RingFinger4),
-            //
-            (xr::HandJoint::LITTLE_METACARPAL, PinkyFinger0),
-            (xr::HandJoint::LITTLE_PROXIMAL, PinkyFinger1),
-            (xr::HandJoint::LITTLE_INTERMEDIATE, PinkyFinger2),
-            (xr::HandJoint::LITTLE_DISTAL, PinkyFinger3),
-            (xr::HandJoint::LITTLE_TIP, PinkyFinger4),
+        macro_rules! joints_for_finger {
+            ($xr_finger:ident, $vr_finger:ident) => {
+                paste! {[
+                    (xr::HandJoint::[<$xr_finger _METACARPAL>], [<$vr_finger Finger0>]),
+                    (xr::HandJoint::[<$xr_finger _PROXIMAL>], [<$vr_finger Finger1>]),
+                    (xr::HandJoint::[<$xr_finger _INTERMEDIATE>], [<$vr_finger Finger2>]),
+                    (xr::HandJoint::[<$xr_finger _DISTAL>], [<$vr_finger Finger3>]),
+                    (xr::HandJoint::[<$xr_finger _TIP>], [<$vr_finger Finger4>])
+                ].as_slice()}
+            };
+        }
+        const JOINTS_TO_BONES: &[&[(xr::HandJoint, HandSkeletonBone)]] = &[
+            [(xr::HandJoint::PALM, Root), (xr::HandJoint::WRIST, Wrist)].as_slice(),
+            &[
+                (xr::HandJoint::THUMB_METACARPAL, Thumb0),
+                (xr::HandJoint::THUMB_PROXIMAL, Thumb1),
+                (xr::HandJoint::THUMB_DISTAL, Thumb2),
+                (xr::HandJoint::THUMB_TIP, Thumb3),
+            ],
+            joints_for_finger!(INDEX, Index),
+            joints_for_finger!(MIDDLE, Middle),
+            joints_for_finger!(RING, Ring),
+            joints_for_finger!(LITTLE, Pinky),
         ];
 
-        joints[xr::HandJoint::WRIST] *= Affine3A::from_quat(Quat::from_euler(
-            glam::EulerRot::YXZ,
-            -FRAC_PI_2,
-            FRAC_PI_2,
-            0.0,
-        ));
-        if transform_space == vr::EVRSkeletalTransformSpace::VRSkeletalTransformSpace_Parent {
-            let parent_id = RefCell::new(xr::HandJoint::WRIST);
-            let parented_joints = RefCell::new(joints.clone());
-            let localize = |joint: xr::HandJoint| {
-                let mut parent_id = parent_id.borrow_mut();
-                let mut p = parented_joints.borrow_mut();
-                p[joint] = joints[*parent_id].inverse() * p[joint];
-                *parent_id = joint;
-            };
+        let xr_joint_to_vr_bone = |joint: &Affine3A, bone: &mut vr::VRBoneTransform_t| {
+            let (_, mut rot, mut pos) = joint.to_scale_rotation_translation();
 
-            //localize(xr::HandJoint::WRIST);
-
-            macro_rules! joints_for_finger {
-                ($finger:ident) => {
-                    paste! {[
-                        xr::HandJoint::[<$finger _METACARPAL>],
-                        xr::HandJoint::[<$finger _PROXIMAL>],
-                        xr::HandJoint::[<$finger _INTERMEDIATE>],
-                        xr::HandJoint::[<$finger _DISTAL>],
-                        xr::HandJoint::[<$finger _TIP>],
-                    ].as_slice()}
-                };
-            }
-
-            for joint_list in [
-                [
-                    xr::HandJoint::THUMB_METACARPAL,
-                    xr::HandJoint::THUMB_PROXIMAL,
-                    xr::HandJoint::THUMB_DISTAL,
-                    xr::HandJoint::THUMB_TIP,
-                ]
-                .as_slice(),
-                joints_for_finger!(INDEX),
-                joints_for_finger!(MIDDLE),
-                joints_for_finger!(RING),
-                joints_for_finger!(LITTLE),
-            ] {
-                for joint in joint_list.iter().copied() {
-                    localize(joint);
-                }
-                *parent_id.borrow_mut() = xr::HandJoint::WRIST;
-            }
-
-            joints = parented_joints.into_inner();
-        }
-
-        transforms[Root as usize] = vr::VRBoneTransform_t {
-            position: vr::HmdVector4_t {
-                v: [0.0, 0.0, 0.0, 1.0],
-            },
-            orientation: vr::HmdQuaternionf_t {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-                w: 1.0,
-            },
-        };
-
-        joints[xr::HandJoint::WRIST] *= match hand {
-            Hand::Left => {
-                Affine3A::from_quat(Quat::from_euler(glam::EulerRot::ZXY, PI, -FRAC_PI_2, 0.0))
-            }
-            Hand::Right => Affine3A::from_rotation_x(-FRAC_PI_2),
-        };
-        for (joint, bone) in JOINTS_TO_BONES.iter().copied().skip(1) {
-            let (_, mut rot, mut pos) = joints[joint].to_scale_rotation_translation();
-
+            // The following transform converts our joints to the OpenVR coordinate system.
+            // I have no idea what this transform is or how it works, but both Monado and ALVR
+            // appear to have it, and it seems to work, so here it is.
+            // https://github.com/alvr-org/ALVR/blob/cf52f875c2720b2c17ef490cfbec4c07ee5f41aa/alvr/server_openvr/src/tracking.rs#L82
+            // https://gitlab.freedesktop.org/monado/monado/-/blob/d7089f182b0514e13554e99512d63e69c30523c5/src/xrt/state_trackers/steamvr_drv/ovrd_driver.cpp#L239
             std::mem::swap(&mut pos.x, &mut pos.z);
             pos.z = -pos.z;
 
@@ -606,30 +532,79 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
                 rot.y = -rot.y;
             }
 
-            transforms[bone as usize] = vr::VRBoneTransform_t {
-                position: vr::HmdVector4_t {
-                    v: [pos.x, pos.y, pos.z, 1.0],
-                },
-                orientation: vr::HmdQuaternionf_t {
-                    x: rot.x,
-                    y: rot.y,
-                    z: rot.z,
-                    w: rot.w,
-                },
+            *bone = vr::VRBoneTransform_t {
+                position: pos.into(),
+                orientation: rot.into(),
             };
+        };
+
+        const AUX_BONES: &[(HandSkeletonBone, xr::HandJoint)] = &[
+            (AuxThumb, xr::HandJoint::THUMB_DISTAL),
+            (AuxIndexFinger, xr::HandJoint::INDEX_DISTAL),
+            (AuxMiddleFinger, xr::HandJoint::MIDDLE_DISTAL),
+            (AuxRingFinger, xr::HandJoint::RING_DISTAL),
+            (AuxPinkyFinger, xr::HandJoint::LITTLE_DISTAL),
+        ];
+
+        for (aux, joint) in AUX_BONES.iter().copied() {
+            xr_joint_to_vr_bone(&joints[joint], &mut transforms[aux as usize]);
         }
 
-        //const AUX_JOINTS: &[(HandSkeletonBone, HandSkeletonBone)] = &[
-        //    (AuxThumb, Thumb2),
-        //    (AuxIndexFinger, IndexFinger3),
-        //    (AuxMiddleFinger, MiddleFinger3),
-        //    (AuxRingFinger, RingFinger3),
-        //    (AuxPinkyFinger, PinkyFinger3),
-        //];
+        // The wrists appear to have to some sort of strange orientation compared
+        // to the other joints - this rotation fixes it up
+        joints[xr::HandJoint::WRIST] *= Affine3A::from_quat(Quat::from_euler(
+            glam::EulerRot::YZXEx,
+            -FRAC_PI_2,
+            FRAC_PI_2,
+            0.0,
+        ));
 
-        //for (aux, bone) in AUX_JOINTS.iter().copied() {
-        //    transforms[aux as usize] = transforms[bone as usize];
-        //}
+        if transform_space == vr::EVRSkeletalTransformSpace::VRSkeletalTransformSpace_Parent {
+            // OpenXR reports all our bones in "model" space (basically), so we need to
+            // convert everything into parent space.
+            // For each finger, the metacarpal is a child of the wrist, and then each consecutive
+            // joint in that finger is a parent->child relationship.
+            // https://github.com/ValveSoftware/openvr/wiki/Hand-Skeleton#bone-structure
+            let parent_id = RefCell::new(xr::HandJoint::WRIST);
+            let mut parented_joints = joints.clone();
+            let mut localize = |joint: xr::HandJoint| {
+                let mut parent_id = parent_id.borrow_mut();
+                parented_joints[joint] = joints[*parent_id].inverse() * parented_joints[joint];
+                *parent_id = joint;
+            };
+
+            for joint_list in JOINTS_TO_BONES.iter().copied().skip(1) {
+                for (joint, _) in joint_list.iter().copied() {
+                    localize(joint);
+                }
+                *parent_id.borrow_mut() = xr::HandJoint::WRIST;
+            }
+
+            joints = parented_joints;
+        }
+
+        // The root bone is supposed to not transform, allegedly
+        // Changing the root bone seems to change the offset of the hand
+        transforms[Root as usize] = Affine3A::IDENTITY.into();
+
+        // Currently as is, the hands will point down
+        // This rotation corrects them so they are pointing the correct direction
+        // Note that it is hand specific.
+        joints[xr::HandJoint::WRIST] *= match hand {
+            Hand::Left => {
+                Affine3A::from_quat(Quat::from_euler(glam::EulerRot::YZXEx, FRAC_PI_2, PI, 0.0))
+            }
+            Hand::Right => Affine3A::from_rotation_y(-FRAC_PI_2),
+        };
+        transforms[Wrist as usize] = joints[xr::HandJoint::WRIST].into();
+
+        for (joint, bone) in JOINTS_TO_BONES[1..]
+            .iter()
+            .flat_map(|list| list.iter())
+            .copied()
+        {
+            xr_joint_to_vr_bone(&joints[joint], &mut transforms[bone as usize])
+        }
 
         vr::EVRInputError::VRInputError_None
     }
@@ -671,8 +646,17 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
     ) -> vr::EVRInputError {
         todo!()
     }
-    fn GetBoneCount(&self, _: vr::VRActionHandle_t, _: *mut u32) -> vr::EVRInputError {
-        crate::warn_unimplemented!("GetBoneCount");
+    fn GetBoneCount(&self, handle: vr::VRActionHandle_t, count: *mut u32) -> vr::EVRInputError {
+        get_action_from_handle!(self, handle, session_data, action);
+        if !matches!(action, ActionData::Skeleton { .. }) {
+            return vr::EVRInputError::VRInputError_WrongType;
+        }
+
+        let Some(count) = (unsafe { count.as_mut() }) else {
+            return vr::EVRInputError::VRInputError_InvalidParam;
+        };
+        *count = HandSkeletonBone::Count as u32;
+
         vr::EVRInputError::VRInputError_None
     }
     fn SetDominantHand(&self, _: vr::ETrackedControllerRole) -> vr::EVRInputError {
