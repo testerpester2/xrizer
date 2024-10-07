@@ -33,12 +33,14 @@
 		{
 			"name": "/actions/set1/in/SkellyL",
 			"type": "skeleton",
-			"skeleton": "/skeleton/hand/left"
+			"skeleton": "/skeleton/hand/left",
+			"requirement": "mandatory"
 		},
 		{
 			"name": "/actions/set1/in/SkellyR",
 			"type": "skeleton",
-			"skeleton": "/skeleton/hand/right"
+			"skeleton": "/skeleton/hand/right",
+			"requirement": "mandatory"
 		},
 		{
 			"name": "/actions/set1/in/Vib",

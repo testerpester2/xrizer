@@ -143,7 +143,7 @@ impl<C: openxr_data::Compositor> Input<C> {
 struct ActionManifest {
     default_bindings: Vec<DefaultBindings>,
     action_sets: Vec<ActionSetJson>,
-    actions: Vec<ActionJson>,
+    actions: Vec<ActionType>,
     localization: Option<Vec<Localization>>,
     // localization_files
 }
@@ -170,16 +170,30 @@ struct ActionSetJson {
 }
 
 #[derive(Deserialize)]
-struct ActionJson {
-    #[serde(rename = "name")]
-    path: String,
-    #[serde(rename = "type")]
-    ty: ActionType,
-    #[serde(default, deserialize_with = "parse_skeleton")]
-    skeleton: Option<Hand>,
+#[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
+enum ActionType {
+    Boolean(ActionDataCommon),
+    Vector1(ActionDataCommon),
+    Vector2(ActionDataCommon),
+    Vibration(ActionDataCommon),
+    Pose(ActionDataCommon),
+    Skeleton(SkeletonData),
 }
 
-fn parse_skeleton<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Hand>, D::Error> {
+#[derive(Deserialize)]
+struct ActionDataCommon {
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct SkeletonData {
+    #[serde(deserialize_with = "parse_skeleton")]
+    skeleton: Hand,
+    #[serde(flatten)]
+    data: ActionDataCommon,
+}
+
+fn parse_skeleton<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Hand, D::Error> {
     let path: &str = Deserialize::deserialize(d)?;
     let Some(hand) = path.strip_prefix("/skeleton/hand") else {
         return Err(D::Error::invalid_value(
@@ -189,8 +203,8 @@ fn parse_skeleton<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Hand>
     };
 
     match hand {
-        "/left" => Ok(Some(Hand::Left)),
-        "/right" => Ok(Some(Hand::Right)),
+        "/left" => Ok(Hand::Left),
+        "/right" => Ok(Hand::Right),
         _ => Err(D::Error::invalid_value(
             Unexpected::Str(hand),
             &r#""/left" or "/right""#,
@@ -203,18 +217,6 @@ struct Localization {
     language_tag: String,
     #[serde(flatten)]
     localized_names: HashMap<String, String>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-#[serde(rename_all = "lowercase")]
-enum ActionType {
-    Boolean,
-    Vector1,
-    Vector2,
-    Vibration,
-    Pose,
-    Skeleton,
 }
 
 fn load_action_sets(
@@ -264,81 +266,96 @@ fn load_actions(
     session: &xr::Session<xr::vulkan::Vulkan>,
     english: Option<&Localization>,
     sets: &HashMap<String, xr::ActionSet>,
-    actions: Vec<ActionJson>,
+    actions: Vec<ActionType>,
     left_hand: xr::Path,
     right_hand: xr::Path,
 ) -> Result<HashMap<String, super::ActionData>, vr::EVRInputError> {
     let mut ret = HashMap::with_capacity(actions.len());
-    for ActionJson { path, ty, skeleton } in actions {
-        let localized = english
-            .and_then(|e| e.localized_names.get(&path))
-            .map(|s| s.as_str());
-
-        let path = path.to_lowercase();
-        let set_end_idx = path.match_indices('/').nth(2).unwrap().0;
-        let set_name = &path[0..set_end_idx];
-        let xr_friendly_name = path.rsplit_once('/').unwrap().1;
-        let localized = localized.unwrap_or(xr_friendly_name);
-
-        trace!("Creating action {xr_friendly_name} (localized: {localized}) in set {set_name:?}");
-        let set = &sets[set_name];
-
+    for action in actions {
         fn create_action<T: xr::ActionTy>(
-            set: &xr::ActionSet,
-            name: &str,
-            localized: &str,
+            data: &ActionDataCommon,
+            sets: &HashMap<String, xr::ActionSet>,
+            english: Option<&Localization>,
             paths: &[xr::Path],
         ) -> xr::Result<xr::Action<T>> {
-            set.create_action(name, localized, paths).or_else(|err| {
-                // If we get a duplicated localized name, just unduplicate it and try again
-                if err == xr::sys::Result::ERROR_LOCALIZED_NAME_DUPLICATED {
-                    let localized = format!("{localized} (copy)");
-                    create_action(set, name, &localized, paths)
-                } else {
-                    Err(err)
-                }
-            })
+            let localized = english
+                .and_then(|e| e.localized_names.get(&data.name))
+                .map(|s| s.as_str());
+
+            let path = data.name.to_lowercase();
+            let set_end_idx = path.match_indices('/').nth(2).unwrap().0;
+            let set_name = &path[0..set_end_idx];
+            let set = &sets[set_name];
+            let xr_friendly_name = path.rsplit_once('/').unwrap().1;
+            let localized = localized.unwrap_or(xr_friendly_name);
+            trace!(
+                "Creating action {xr_friendly_name} (localized: {localized}) in set {set_name:?}"
+            );
+
+            set.create_action(xr_friendly_name, localized, paths)
+                .or_else(|err| {
+                    // If we get a duplicated localized name, just unduplicate it and try again
+                    if err == xr::sys::Result::ERROR_LOCALIZED_NAME_DUPLICATED {
+                        let localized = format!("{localized} (copy)");
+                        set.create_action(xr_friendly_name, &localized, paths)
+                    } else {
+                        Err(err)
+                    }
+                })
         }
 
         let paths = &[left_hand, right_hand];
+        macro_rules! create_action {
+            ($ty:ty, $data:expr) => {
+                create_action::<$ty>(&$data, sets, english, paths).unwrap()
+            };
+        }
         use super::ActionData::*;
-        let action = match ty {
-            ActionType::Boolean => Bool(super::BoolActionData {
-                action: create_action::<bool>(&set, &xr_friendly_name, localized, paths).unwrap(),
-                dpad_data: None,
-            }),
-            ActionType::Vector1 => Vector1 {
-                action: create_action::<f32>(&set, &xr_friendly_name, localized, paths).unwrap(),
-                last_value: super::AtomicF32::new(0.0),
-            },
-            ActionType::Vector2 => Vector2 {
-                action: create_action::<xr::Vector2f>(&set, &xr_friendly_name, localized, paths)
-                    .unwrap(),
-                last_value: (super::AtomicF32::new(0.0), super::AtomicF32::new(0.0)),
-            },
-            ActionType::Pose => {
-                let action =
-                    create_action::<xr::Posef>(&set, &xr_friendly_name, localized, paths).unwrap();
+        let (path, action) = match &action {
+            ActionType::Boolean(data) => (
+                &data.name,
+                Bool(super::BoolActionData {
+                    action: create_action!(bool, data),
+                    dpad_data: None,
+                }),
+            ),
+            ActionType::Vector1(data) => (
+                &data.name,
+                Vector1 {
+                    action: create_action!(f32, data),
+                    last_value: super::AtomicF32::new(0.0),
+                },
+            ),
+            ActionType::Vector2(data) => (
+                &data.name,
+                Vector2 {
+                    action: create_action!(xr::Vector2f, data),
+                    last_value: (super::AtomicF32::new(0.0), super::AtomicF32::new(0.0)),
+                },
+            ),
+            ActionType::Pose(data) => {
+                let action = create_action!(xr::Posef, data);
                 let left_space = action
                     .create_space(session, left_hand, xr::Posef::IDENTITY)
                     .unwrap();
                 let right_space = action
                     .create_space(session, right_hand, xr::Posef::IDENTITY)
                     .unwrap();
-                Pose {
-                    action,
-                    left_space,
-                    right_space,
-                }
+                (
+                    &data.name,
+                    Pose {
+                        action,
+                        left_space,
+                        right_space,
+                    },
+                )
             }
-            ActionType::Skeleton => {
-                let hand = skeleton.expect("Got skeleton action without path");
-                let action =
-                    create_action::<xr::Posef>(&set, &xr_friendly_name, localized, paths).unwrap();
+            ActionType::Skeleton(SkeletonData { skeleton, data }) => {
+                let action = create_action!(xr::Posef, data);
                 let space = action
                     .create_space(
                         session,
-                        match hand {
+                        match skeleton {
                             Hand::Left => left_hand,
                             Hand::Right => right_hand,
                         },
@@ -346,7 +363,7 @@ fn load_actions(
                     )
                     .unwrap();
 
-                let hand_tracker = match session.create_hand_tracker(match hand {
+                let hand_tracker = match session.create_hand_tracker(match skeleton {
                     Hand::Left => xr::Hand::LEFT,
                     Hand::Right => xr::Hand::RIGHT,
                 }) {
@@ -358,18 +375,19 @@ fn load_actions(
                     Err(other) => panic!("Creating hand tracker failed: {other:?}"),
                 };
 
-                Skeleton {
-                    action,
-                    space,
-                    hand,
-                    hand_tracker,
-                }
+                (
+                    &data.name,
+                    Skeleton {
+                        action,
+                        space,
+                        hand: *skeleton,
+                        hand_tracker,
+                    },
+                )
             }
-            ActionType::Vibration => Haptic(
-                create_action::<xr::Haptic>(&set, &xr_friendly_name, localized, paths).unwrap(),
-            ),
+            ActionType::Vibration(data) => (&data.name, Haptic(create_action!(xr::Haptic, data))),
         };
-        ret.insert(path, action);
+        ret.insert(path.to_lowercase(), action);
     }
     Ok(ret)
 }
