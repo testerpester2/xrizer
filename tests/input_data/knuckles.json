@@ -158,6 +158,15 @@
 				},
 				{
 					"inputs": {
+						"pull": {
+							"output": "/actions/set1/in/vec1act"
+						}
+					},
+					"mode": "trigger",
+					"path": "/user/hand/right/input/grip"
+				},
+				{
+					"inputs": {
 						"force": {
 							"output": "/actions/set1/in/vec1act"
 						}

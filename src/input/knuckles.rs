@@ -21,7 +21,7 @@ impl InteractionProfile for Knuckles {
         PathTranslation {
             from: "pull",
             to: "value",
-            stop: true,
+            stop: false,
         },
         PathTranslation {
             from: "input/grip",
@@ -148,6 +148,7 @@ mod tests {
                 "/user/hand/right/input/trigger/value".into(),
                 "/user/hand/left/input/squeeze/force".into(),
                 "/user/hand/right/input/squeeze/force".into(),
+                "/user/hand/right/input/squeeze/value".into(),
             ],
         );
 
