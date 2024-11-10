@@ -99,6 +99,7 @@ fn init_logging() {
                 log::error!("{info}");
                 let backtrace = std::backtrace::Backtrace::force_capture();
                 log::error!("Backtrace: \n{backtrace}");
+                std::process::abort();
             }));
         }
 
