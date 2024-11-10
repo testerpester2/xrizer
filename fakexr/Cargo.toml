@@ -8,3 +8,4 @@ openxr-sys = { workspace = true }
 paste = "1.0.15"
 ash = { workspace = true }
 crossbeam-utils = "0.8.20"
+slotmap = { workspace = true }

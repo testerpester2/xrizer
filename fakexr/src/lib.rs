@@ -2,11 +2,12 @@ pub mod vulkan;
 use crossbeam_utils::atomic::AtomicCell;
 use openxr_sys as xr;
 use paste::paste;
+use slotmap::{DefaultKey, Key, KeyData, SlotMap};
 use std::collections::HashMap;
 use std::ffi::{c_char, CStr, CString};
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
-    mpsc, Arc, Mutex, OnceLock, RwLock, Weak,
+    mpsc, Arc, LazyLock, Mutex, MutexGuard, OnceLock, RwLock, Weak,
 };
 
 #[derive(Clone, Copy, PartialEq)]
@@ -19,7 +20,7 @@ pub enum ActionState {
 }
 
 pub fn set_action_state(action: xr::Action, state: ActionState) {
-    let action = Action::from_xr(action);
+    let action = xr::Action::to_handle(action).unwrap();
     let s = action.state.load();
     assert_eq!(std::mem::discriminant(&state), std::mem::discriminant(&s));
     action.pending_state.store(Some(state));
@@ -27,20 +28,21 @@ pub fn set_action_state(action: xr::Action, state: ActionState) {
 
 #[track_caller]
 pub fn get_suggested_bindings(action: xr::Action, profile: xr::Path) -> Vec<String> {
-    let action = Action::from_xr(action);
-    let path = Path::from_xr(profile);
+    let action = xr::Action::to_handle(action).unwrap();
+    let instance = action.instance.upgrade().unwrap();
     let suggested = action.suggested.lock().unwrap();
 
     suggested
-        .get(&path)
+        .get(&profile)
         .unwrap_or_else(|| {
             panic!(
                 "No suggested bindings for profile {} for action {:?}",
-                path.val, action.name,
+                instance.get_path_value(profile).unwrap(),
+                action.name,
             )
         })
         .iter()
-        .map(|path| path.val.clone())
+        .map(|path| instance.get_path_value(*path).unwrap())
         .collect()
 }
 
@@ -129,11 +131,6 @@ pub extern "system" fn get_instance_proc_addr(
             );
         }
     } else {
-        let instance = instance.into_raw() as *const Instance;
-        if unsafe { (*instance).debug } != Instance::DEBUG_VAL {
-            return xr::Result::ERROR_HANDLE_INVALID;
-        }
-
         use vulkan::xr::*;
 
         unsafe {
@@ -221,7 +218,7 @@ extern "system" fn enumerate_instance_extension_properties(
     unsafe { *property_count_output = 1 };
     if property_capacity_input > 0 {
         let props =
-            unsafe { std::slice::from_raw_parts_mut(properties, property_count_output as usize) };
+            unsafe { std::slice::from_raw_parts_mut(properties, property_capacity_input as usize) };
         props[0] = xr::ExtensionProperties {
             ty: xr::ExtensionProperties::TYPE,
             next: std::ptr::null_mut(),
@@ -236,67 +233,80 @@ extern "system" fn enumerate_instance_extension_properties(
     xr::Result::SUCCESS
 }
 
-trait Handle: Sized {
-    type XrType;
-    const DEBUG_VAL: u64;
-    const TO_RAW: fn(Self::XrType) -> u64;
+trait Handle: 'static {
+    type XrType: XrType;
+    fn instances() -> MutexGuard<'static, SlotMap<DefaultKey, Arc<Self>>>;
+    fn to_xr(self: Arc<Self>) -> Self::XrType;
+}
 
-    fn get_debug_val(ptr: *const Self) -> u64;
+trait XrType {
+    type Handle: Handle;
+    const TO_RAW: fn(Self) -> u64;
+    fn to_handle(xr: Self) -> Option<Arc<Self::Handle>>;
+}
 
-    fn validate(ptr: *const Self) -> bool {
-        Self::get_debug_val(ptr) == Self::DEBUG_VAL
-    }
-    fn from_xr(xr: Self::XrType) -> Arc<Self> {
-        let ptr = Self::TO_RAW(xr) as *const Self;
-        assert!(Self::validate(ptr));
-        unsafe {
-            Arc::increment_strong_count(ptr);
-            Arc::from_raw(ptr)
+macro_rules! get_handle {
+    ($handle:expr) => {{
+        match <_ as XrType>::to_handle($handle) {
+            Some(handle) => handle,
+            None => {
+                return xr::Result::ERROR_HANDLE_INVALID;
+            }
         }
-    }
+    }};
 }
 
 macro_rules! impl_handle {
-    ($ty:ty, $xr:ty, $debug:literal) => {
+    ($ty:ty, $xr_type:ty) => {
+        impl XrType for $xr_type {
+            type Handle = $ty;
+            const TO_RAW: fn(Self) -> u64 = <$xr_type>::into_raw;
+            fn to_handle(xr: $xr_type) -> Option<Arc<Self::Handle>> {
+                Self::Handle::instances()
+                    .get(DefaultKey::from(KeyData::from_ffi(xr.into_raw())))
+                    .map(|i| Arc::clone(i))
+            }
+        }
         impl Handle for $ty {
-            type XrType = $xr;
-            const DEBUG_VAL: u64 = $debug;
-            const TO_RAW: fn(Self::XrType) -> u64 = <$xr>::into_raw;
-
-            fn get_debug_val(ptr: *const Self) -> u64 {
-                unsafe { *(ptr as *const u64) }
+            type XrType = $xr_type;
+            fn instances() -> MutexGuard<'static, SlotMap<DefaultKey, Arc<Self>>> {
+                static I: LazyLock<Mutex<SlotMap<DefaultKey, Arc<$ty>>>> =
+                    LazyLock::new(|| Mutex::default());
+                I.lock().unwrap()
+            }
+            fn to_xr(self: Arc<Self>) -> $xr_type {
+                let key = Self::instances().insert(self);
+                <$xr_type>::from_raw(key.data().as_ffi())
             }
         }
     };
 }
 
-#[repr(C)]
+struct EventDataBuffer(Vec<u8>);
+
 struct Instance {
-    debug: u64,
-    event_receiver: mpsc::Receiver<xr::EventDataBuffer>,
-    event_sender: mpsc::Sender<xr::EventDataBuffer>,
-    paths: Mutex<HashMap<String, Arc<Path>>>,
+    event_receiver: Mutex<mpsc::Receiver<EventDataBuffer>>,
+    event_sender: mpsc::Sender<EventDataBuffer>,
+    paths: Mutex<SlotMap<DefaultKey, String>>,
+    string_to_path: Mutex<HashMap<String, DefaultKey>>,
 }
 
-#[repr(C)]
-#[derive(Eq, Hash, PartialEq, Debug)]
-struct Path {
-    debug: u64,
-    val: String,
+impl Instance {
+    fn get_path_value(&self, path: xr::Path) -> Option<String> {
+        let key = DefaultKey::from(KeyData::from_ffi(path.into_raw()));
+        self.paths.lock().unwrap().get(key).cloned()
+    }
 }
 
-#[repr(C)]
 struct Session {
-    debug: u64,
     instance: Weak<Instance>,
-    event_sender: mpsc::Sender<xr::EventDataBuffer>,
+    event_sender: mpsc::Sender<EventDataBuffer>,
     vk_device: AtomicU64,
     attached_sets: OnceLock<Box<[xr::ActionSet]>>,
 }
 
-#[repr(C)]
 struct ActionSet {
-    debug: u64,
+    instance: Weak<Instance>,
     pending_actions: RwLock<Vec<Arc<Action>>>,
     actions: OnceLock<Vec<Arc<Action>>>,
     active: AtomicBool,
@@ -310,29 +320,24 @@ impl ActionSet {
     }
 }
 
-#[repr(C)]
 struct Action {
-    debug: u64,
+    instance: Weak<Instance>,
     name: CString,
     localized_name: CString,
     state: AtomicCell<ActionState>,
     changed: AtomicBool,
     pending_state: AtomicCell<Option<ActionState>>,
-    suggested: Mutex<HashMap<Arc<Path>, Vec<Arc<Path>>>>,
+    suggested: Mutex<HashMap<xr::Path, Vec<xr::Path>>>,
 }
 
-impl_handle!(Instance, xr::Instance, 342);
-impl_handle!(Session, xr::Session, 442);
-impl_handle!(ActionSet, xr::ActionSet, 542);
-impl_handle!(Action, xr::Action, 662);
-impl_handle!(Path, xr::Path, 762);
+impl_handle!(Instance, xr::Instance);
+impl_handle!(Session, xr::Session);
+impl_handle!(ActionSet, xr::ActionSet);
+impl_handle!(Action, xr::Action);
 
-macro_rules! destroy_handle {
-    ($ty:ty, $handle:expr) => {{
-        unsafe { Arc::from_raw($handle.into_raw() as *const $ty) };
-
-        xr::Result::SUCCESS
-    }};
+fn destroy_handle<T: XrType>(xr: T) -> xr::Result {
+    T::Handle::instances().remove(DefaultKey::from(KeyData::from_ffi(T::TO_RAW(xr))));
+    xr::Result::SUCCESS
 }
 
 extern "system" fn create_instance(
@@ -341,19 +346,19 @@ extern "system" fn create_instance(
 ) -> xr::Result {
     let (tx, rx) = mpsc::channel();
     let inst = Arc::new(Instance {
-        debug: Instance::DEBUG_VAL,
-        event_receiver: rx,
+        event_receiver: rx.into(),
         event_sender: tx,
         paths: Default::default(),
+        string_to_path: Default::default(),
     });
     unsafe {
-        *instance = xr::Instance::from_raw(Arc::into_raw(inst) as u64);
+        *instance = inst.to_xr();
     }
     xr::Result::SUCCESS
 }
 
 extern "system" fn destroy_instance(instance: xr::Instance) -> xr::Result {
-    destroy_handle!(Instance, instance)
+    destroy_handle(instance)
 }
 
 extern "system" fn create_session(
@@ -361,7 +366,7 @@ extern "system" fn create_session(
     create_info: *const xr::SessionCreateInfo,
     session: *mut xr::Session,
 ) -> xr::Result {
-    let instance = Instance::from_xr(instance);
+    let instance = get_handle!(instance);
     let info = unsafe { create_info.as_ref().unwrap() };
     let vk = unsafe {
         (info.next as *const xr::GraphicsBindingVulkanKHR)
@@ -370,7 +375,6 @@ extern "system" fn create_session(
     };
     assert_eq!(vk.ty, xr::GraphicsBindingVulkanKHR::TYPE);
     let sess = Arc::new(Session {
-        debug: Session::DEBUG_VAL,
         instance: Arc::downgrade(&instance),
         event_sender: instance.event_sender.clone(),
         vk_device: (vk.device as u64).into(),
@@ -379,7 +383,7 @@ extern "system" fn create_session(
 
     let tx = sess.event_sender.clone();
     unsafe {
-        *session = xr::Session::from_raw(Arc::into_raw(sess) as u64);
+        *session = sess.to_xr();
     }
 
     send_event(
@@ -397,37 +401,39 @@ extern "system" fn create_session(
 }
 
 extern "system" fn destroy_session(session: xr::Session) -> xr::Result {
-    let session = unsafe { Arc::from_raw(session.into_raw() as *const Session) };
+    let s = get_handle!(session);
     // Our Vulkan device needs to still exist when we destroy the session - a real runtime will use
     // it!
-    let device = session.vk_device.load(Ordering::Relaxed);
+    let device = s.vk_device.load(Ordering::Relaxed);
     if !vulkan::Device::validate(device) {
         panic!("Vulkan device invalid ({device})")
     }
-    assert_eq!(Arc::strong_count(&session), 1);
+    destroy_handle(session);
+
     xr::Result::SUCCESS
 }
 
 extern "system" fn create_action_set(
-    _: xr::Instance,
+    instance: xr::Instance,
     _: *const xr::ActionSetCreateInfo,
     set: *mut xr::ActionSet,
 ) -> xr::Result {
-    let s = ActionSet {
-        debug: ActionSet::DEBUG_VAL,
+    let instance = get_handle!(instance);
+    let s = Arc::new(ActionSet {
+        instance: Arc::downgrade(&instance),
         actions: OnceLock::new(),
         pending_actions: RwLock::default(),
         active: false.into(),
-    };
+    });
 
     unsafe {
-        *set = xr::ActionSet::from_raw(Arc::into_raw(s.into()) as u64);
+        *set = s.to_xr();
     }
     xr::Result::SUCCESS
 }
 
 extern "system" fn destroy_action_set(set: xr::ActionSet) -> xr::Result {
-    destroy_handle!(ActionSet, set)
+    destroy_handle(set)
 }
 
 extern "system" fn create_action(
@@ -435,7 +441,7 @@ extern "system" fn create_action(
     info: *const xr::ActionCreateInfo,
     action: *mut xr::Action,
 ) -> xr::Result {
-    let set = ActionSet::from_xr(set);
+    let set = get_handle!(set);
     if set.actions.get().is_some() {
         return xr::Result::ERROR_ACTIONSETS_ALREADY_ATTACHED;
     }
@@ -472,7 +478,7 @@ extern "system" fn create_action(
     }
 
     let a = Arc::new(Action {
-        debug: Action::DEBUG_VAL,
+        instance: set.instance.clone(),
         name: name.to_owned(),
         changed: false.into(),
         localized_name: CStr::from_bytes_until_nul(unsafe {
@@ -498,13 +504,13 @@ extern "system" fn create_action(
 
     set.pending_actions.write().unwrap().push(a.clone());
     unsafe {
-        *action = xr::Action::from_raw(Arc::into_raw(a) as u64);
+        *action = a.to_xr();
     }
     xr::Result::SUCCESS
 }
 
 extern "system" fn destroy_action(action: xr::Action) -> xr::Result {
-    destroy_handle!(Action, action)
+    destroy_handle(action)
 }
 
 extern "system" fn create_action_space(
@@ -524,20 +530,16 @@ extern "system" fn get_system(
     xr::Result::SUCCESS
 }
 
-fn send_event<T>(tx: &mpsc::Sender<xr::EventDataBuffer>, event: T) {
+fn send_event<T: Copy>(tx: &mpsc::Sender<EventDataBuffer>, event: T) {
     const {
         assert!(std::mem::size_of::<T>() <= std::mem::size_of::<xr::EventDataBuffer>());
     }
 
-    let mut raw_event = xr::EventDataBuffer {
-        ty: xr::EventDataBuffer::TYPE,
-        next: std::ptr::null(),
-        varying: [0; 4000],
-    };
-    unsafe {
-        (&mut raw_event as *mut _ as *mut T).copy_from_nonoverlapping(&event, 1);
+    let s = unsafe {
+        std::slice::from_raw_parts(&event as *const T as *const u8, std::mem::size_of::<T>())
     }
-    tx.send(raw_event).unwrap();
+    .to_vec();
+    tx.send(EventDataBuffer(s)).unwrap();
 }
 
 extern "system" fn begin_session(_: xr::Session, _: *const xr::SessionBeginInfo) -> xr::Result {
@@ -571,10 +573,15 @@ extern "system" fn poll_event(
     instance: xr::Instance,
     buffer: *mut xr::EventDataBuffer,
 ) -> xr::Result {
-    let instance = Instance::from_xr(instance);
-    match instance.event_receiver.try_recv() {
+    let instance = get_handle!(instance);
+    let recv = instance.event_receiver.lock().unwrap();
+    match recv.try_recv() {
         Ok(event) => {
-            unsafe { *buffer = event };
+            unsafe {
+                buffer
+                    .cast::<u8>()
+                    .copy_from(event.0.as_ptr(), event.0.len());
+            }
             xr::Result::SUCCESS
         }
         Err(mpsc::TryRecvError::Empty) => xr::Result::EVENT_UNAVAILABLE,
@@ -587,19 +594,26 @@ extern "system" fn string_to_path(
     string: *const c_char,
     path: *mut xr::Path,
 ) -> xr::Result {
-    let instance = Instance::from_xr(instance);
+    let instance = get_handle!(instance);
     let s = unsafe { CStr::from_ptr(string) }.to_str().unwrap();
-    let mut paths = instance.paths.lock().unwrap();
-    let p = Arc::clone(paths.entry(s.to_string()).or_insert(Arc::new(Path {
-        debug: Path::DEBUG_VAL,
-        val: s.to_string(),
-    })));
-    unsafe { path.write(xr::Path::from_raw(Arc::into_raw(p) as u64)) }
+    let mut string_to_path = instance.string_to_path.lock().unwrap();
+    let key = match string_to_path.get(s) {
+        Some(p) => *p,
+        None => {
+            let mut paths = instance.paths.lock().unwrap();
+            let key = paths.insert(s.to_string());
+            string_to_path.insert(s.to_string(), key);
+            key
+        }
+    };
+
+    unsafe { path.write(xr::Path::from_raw(key.data().as_ffi())) };
+
     xr::Result::SUCCESS
 }
 
 extern "system" fn request_exit_session(session: xr::Session) -> xr::Result {
-    let sess = Session::from_xr(session);
+    let sess = get_handle!(session);
     send_event(
         &sess.event_sender,
         xr::EventDataSessionStateChanged {
@@ -614,7 +628,7 @@ extern "system" fn request_exit_session(session: xr::Session) -> xr::Result {
 }
 
 extern "system" fn end_session(session: xr::Session) -> xr::Result {
-    let sess = Session::from_xr(session);
+    let sess = get_handle!(session);
     send_event(
         &sess.event_sender,
         xr::EventDataSessionStateChanged {
@@ -632,10 +646,10 @@ extern "system" fn suggest_interaction_profile_bindings(
     instance: xr::Instance,
     binding: *const xr::InteractionProfileSuggestedBinding,
 ) -> xr::Result {
-    let _ = Instance::from_xr(instance);
+    let _ = get_handle!(instance);
     let binding = unsafe { binding.as_ref().unwrap() };
 
-    let profile_path = Path::from_xr(binding.interaction_profile);
+    let profile_path = binding.interaction_profile;
     let bindings = unsafe {
         std::slice::from_raw_parts(
             binding.suggested_bindings,
@@ -644,8 +658,7 @@ extern "system" fn suggest_interaction_profile_bindings(
     };
 
     for xr::ActionSuggestedBinding { action, binding } in bindings.iter().copied() {
-        let action = Action::from_xr(action);
-        let binding = Path::from_xr(binding);
+        let action = get_handle!(action);
         action
             .suggested
             .lock()
@@ -662,13 +675,13 @@ extern "system" fn attach_session_action_sets(
     session: xr::Session,
     info: *const xr::SessionActionSetsAttachInfo,
 ) -> xr::Result {
-    let sesh = Session::from_xr(session);
+    let sesh = get_handle!(session);
     let sets =
         unsafe { std::slice::from_raw_parts((*info).action_sets, (*info).count_action_sets as _) };
     if sesh.attached_sets.set(sets.into()).is_ok() {
         // make action sets immutable
         for set in sesh.attached_sets.get().unwrap() {
-            let set = ActionSet::from_xr(*set);
+            let set = get_handle!(*set);
             set.make_immutable();
         }
         xr::Result::SUCCESS
@@ -681,12 +694,12 @@ extern "system" fn sync_actions(
     session: xr::Session,
     info: *const xr::ActionsSyncInfo,
 ) -> xr::Result {
-    let session = Session::from_xr(session);
+    let session = get_handle!(session);
     let Some(attached) = session.attached_sets.get() else {
         return xr::Result::ERROR_ACTIONSET_NOT_ATTACHED;
     };
     for set in attached {
-        let set = ActionSet::from_xr(*set);
+        let set = get_handle!(*set);
         set.active.store(false, Ordering::Relaxed);
     }
     let sets = unsafe {
@@ -699,7 +712,7 @@ extern "system" fn sync_actions(
         if !attached.contains(&set.action_set) {
             return xr::Result::ERROR_ACTIONSET_NOT_ATTACHED;
         }
-        let set = ActionSet::from_xr(set.action_set);
+        let set = get_handle!(set.action_set);
         let Some(actions) = set.actions.get() else {
             return xr::Result::ERROR_ACTIONSET_NOT_ATTACHED;
         };
@@ -728,9 +741,9 @@ fn get_action_if_attached(
     info: *const xr::ActionStateGetInfo,
 ) -> Option<(Arc<ActionSet>, Arc<Action>)> {
     let sets = session.attached_sets.get()?;
-    let action = Action::from_xr(unsafe { (*info).action });
+    let action = xr::Action::to_handle(unsafe { (*info).action })?;
     sets.into_iter().find_map(|set| {
-        let set = ActionSet::from_xr(*set);
+        let set = xr::ActionSet::to_handle(*set)?;
         for a in set.actions.get().unwrap() {
             if Arc::as_ptr(a) == Arc::as_ptr(&action) {
                 return Some((set, action.clone()));
@@ -745,7 +758,7 @@ extern "system" fn get_action_state_boolean(
     info: *const xr::ActionStateGetInfo,
     state: *mut xr::ActionStateBoolean,
 ) -> xr::Result {
-    let session = Session::from_xr(session);
+    let session = get_handle!(session);
     let Some((set, action)) = get_action_if_attached(&session, info) else {
         return xr::Result::ERROR_ACTIONSET_NOT_ATTACHED;
     };
@@ -770,7 +783,7 @@ extern "system" fn get_action_state_float(
     info: *const xr::ActionStateGetInfo,
     state: *mut xr::ActionStateFloat,
 ) -> xr::Result {
-    let session = Session::from_xr(session);
+    let session = get_handle!(session);
     let Some((set, action)) = get_action_if_attached(&session, info) else {
         return xr::Result::ERROR_ACTIONSET_NOT_ATTACHED;
     };
@@ -794,7 +807,7 @@ extern "system" fn get_action_state_vector2f(
     info: *const xr::ActionStateGetInfo,
     state: *mut xr::ActionStateVector2f,
 ) -> xr::Result {
-    let session = Session::from_xr(session);
+    let session = get_handle!(session);
     let Some((set, action)) = get_action_if_attached(&session, info) else {
         return xr::Result::ERROR_ACTIONSET_NOT_ATTACHED;
     };
@@ -875,7 +888,13 @@ extern "system" fn wait_frame(
     state: *mut xr::FrameState,
 ) -> xr::Result {
     unsafe {
-        (*state).should_render = false.into();
+        state.write(xr::FrameState {
+            ty: xr::FrameState::TYPE,
+            next: std::ptr::null_mut(),
+            predicted_display_time: xr::Time::from_nanos(1),
+            predicted_display_period: xr::Duration::from_nanos(1),
+            should_render: false.into(),
+        })
     }
     xr::Result::SUCCESS
 }

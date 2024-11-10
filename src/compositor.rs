@@ -592,7 +592,9 @@ impl vr::IVRCompositor028_Interface for Compositor {
         game_pose_array: *mut vr::TrackedDevicePose_t,
         game_pose_count: u32,
     ) -> vr::EVRCompositorError {
-        assert!(render_pose_count > 0);
+        if render_pose_count == 0 {
+            return vr::EVRCompositorError::VRCompositorError_None;
+        }
         let render_poses = unsafe {
             std::slice::from_raw_parts_mut(render_pose_array, render_pose_count as usize)
         };
@@ -807,12 +809,8 @@ mod tests {
         }
 
         pub fn wait_get_poses(&self) -> vr::EVRCompositorError {
-            self.comp.WaitGetPoses(
-                &mut vr::TrackedDevicePose_t::default(),
-                1,
-                std::ptr::null_mut(),
-                0,
-            )
+            self.comp
+                .WaitGetPoses(std::ptr::null_mut(), 0, std::ptr::null_mut(), 0)
         }
 
         pub fn submit(&self, eye: vr::EVREye) -> vr::EVRCompositorError {
