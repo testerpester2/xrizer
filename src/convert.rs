@@ -11,7 +11,11 @@ pub fn space_relation_to_openvr_pose(
     ) {
         return vr::TrackedDevicePose_t {
             bPoseIsValid: false,
-            ..Default::default()
+            bDeviceIsConnected: false,
+            mDeviceToAbsoluteTracking: Default::default(),
+            vVelocity: Default::default(),
+            vAngularVelocity: Default::default(),
+            eTrackingResult: vr::ETrackingResult::TrackingResult_Running_OutOfRange,
         };
     }
 
@@ -80,6 +84,7 @@ impl From<Quat> for vr::HmdQuaternionf_t {
     }
 }
 
+// https://github.com/ValveSoftware/openvr/wiki/Matrix-Usage-Example
 impl From<xr::Posef> for vr::HmdMatrix34_t {
     fn from(pose: xr::Posef) -> Self {
         // openvr matrices are row major, glam matrices are column major

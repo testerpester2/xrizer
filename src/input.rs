@@ -101,17 +101,30 @@ enum ActionData {
         last_value: (AtomicF32, AtomicF32),
     },
     Pose {
-        action: xr::Action<xr::Posef>,
-        left_space: xr::Space,
-        right_space: xr::Space,
+        /// Maps an interaction profile path to whatever kind of pose was bound for this action for
+        /// that profile.
+        bindings: HashMap<xr::Path, BoundPose>,
     },
     Skeleton {
-        action: xr::Action<xr::Posef>,
-        space: xr::Space,
         hand: Hand,
         hand_tracker: Option<xr::HandTracker>,
     },
     Haptic(xr::Action<xr::Haptic>),
+}
+
+#[derive(Debug)]
+struct BoundPose {
+    left: Option<BoundPoseType>,
+    right: Option<BoundPoseType>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum BoundPoseType {
+    /// Equivalent to what is returned by WaitGetPoses, this appears to be the same or close to
+    /// OpenXR's grip pose in the same position as the aim pose.
+    Raw,
+    /// Not sure why games still use this, but having it be equivalent to raw seems to work fine.
+    Gdc2015,
 }
 
 #[derive(Debug)]
@@ -454,18 +467,23 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
         };
 
         get_action_from_handle!(self, handle, session_data, action);
-        let ActionData::Skeleton {
-            hand,
-            hand_tracker,
-            space,
-            ..
-        } = action
-        else {
+        let ActionData::Skeleton { hand, hand_tracker } = action else {
             return vr::EVRInputError::VRInputError_WrongType;
         };
+        let hand_tracker = hand_tracker
+            .as_ref()
+            .unwrap_or_else(|| todo!("Support no handtracking"));
 
-        let hand_tracker = hand_tracker.as_ref().expect("hand tracking supported");
-        let Some(joints) = space
+        let legacy = session_data.input_data.legacy_actions.get().unwrap();
+        let Some(raw) = match hand {
+            Hand::Left => &legacy.left_spaces,
+            Hand::Right => &legacy.right_spaces,
+        }
+        .try_get_or_init_raw(&session_data, &legacy, self.openxr.display_time.get()) else {
+            return vr::EVRInputError::VRInputError_None;
+        };
+
+        let Some(joints) = raw
             .locate_hand_joints(hand_tracker, self.openxr.display_time.get())
             .unwrap()
         else {
@@ -497,7 +515,7 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
             };
         }
         const JOINTS_TO_BONES: &[&[(xr::HandJoint, HandSkeletonBone)]] = &[
-            [(xr::HandJoint::PALM, Root), (xr::HandJoint::WRIST, Wrist)].as_slice(),
+            [(xr::HandJoint::WRIST, Wrist)].as_slice(),
             &[
                 (xr::HandJoint::THUMB_METACARPAL, Thumb0),
                 (xr::HandJoint::THUMB_PROXIMAL, Thumb1),
@@ -614,7 +632,7 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
         level: *mut vr::EVRSkeletalTrackingLevel,
     ) -> vr::EVRInputError {
         unsafe {
-            *level = vr::EVRSkeletalTrackingLevel::VRSkeletalTracking_Estimated;
+            *level = vr::EVRSkeletalTrackingLevel::VRSkeletalTracking_Partial;
         }
         vr::EVRInputError::VRInputError_None
     }
@@ -681,21 +699,22 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
         let Some(loaded) = data.input_data.get_loaded_actions() else {
             return vr::EVRInputError::VRInputError_InvalidHandle;
         };
-        let (action, origin) = match loaded.try_get_action(action) {
-            Ok(ActionData::Skeleton { action, hand, .. }) => (
-                action,
-                match hand {
-                    Hand::Left => self.left_hand_key.data().as_ffi(),
-                    Hand::Right => self.right_hand_key.data().as_ffi(),
-                },
-            ),
+        let origin = match loaded.try_get_action(action) {
+            Ok(ActionData::Skeleton { hand, .. }) => match hand {
+                Hand::Left => self.left_hand_key.data().as_ffi(),
+                Hand::Right => self.right_hand_key.data().as_ffi(),
+            },
             Ok(_) => return vr::EVRInputError::VRInputError_WrongType,
             Err(e) => return e,
         };
-
+        let legacy = data.input_data.legacy_actions.get().unwrap();
         unsafe {
-            std::ptr::addr_of_mut!((*action_data).bActive)
-                .write(action.is_active(&data.session, xr::Path::NULL).unwrap());
+            std::ptr::addr_of_mut!((*action_data).bActive).write(
+                legacy
+                    .grip_pose
+                    .is_active(&data.session, xr::Path::NULL)
+                    .unwrap(),
+            );
             std::ptr::addr_of_mut!((*action_data).activeOrigin).write(origin);
         }
         vr::EVRInputError::VRInputError_None
@@ -713,67 +732,84 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
             std::mem::size_of::<vr::InputPoseActionData_t>()
         );
 
-        let map = self.action_map.read().unwrap();
-        let key = ActionKey::from(KeyData::from_ffi(action));
-        trace!("getting pose for {}", map[key].path);
+        if log::log_enabled!(log::Level::Trace) {
+            let map = self.action_map.read().unwrap();
+            let key = ActionKey::from(KeyData::from_ffi(action));
+            trace!("getting pose for {}", map[key].path);
+        }
 
         let data = self.openxr.session_data.get();
         let Some(loaded) = data.input_data.get_loaded_actions() else {
             return vr::EVRInputError::VRInputError_InvalidHandle;
         };
 
-        let subaction_path = match self.subaction_path_from_handle(restrict_to_device) {
-            Some(p) => p,
-            None => {
+        macro_rules! no_data {
+            () => {{
                 unsafe {
                     action_data.write(Default::default());
                 }
                 return vr::EVRInputError::VRInputError_None;
-            }
+            }};
+        }
+        let subaction_path = match self.subaction_path_from_handle(restrict_to_device) {
+            Some(p) => p,
+            None => no_data!(),
         };
 
-        let (action, space, active_origin) = match loaded.try_get_action(action) {
-            Ok(ActionData::Pose {
-                action,
-                left_space,
-                right_space,
-            }) => match subaction_path {
-                x if x == self.openxr.left_hand.subaction_path => {
-                    (action, left_space, self.left_hand_key.data().as_ffi())
+        let (active_origin, hand) = match loaded.try_get_action(action) {
+            Ok(ActionData::Pose { bindings }) => {
+                let (hand, hand_info, active_origin) = match subaction_path {
+                    x if x == self.openxr.left_hand.subaction_path => (
+                        Hand::Left,
+                        &self.openxr.left_hand,
+                        self.left_hand_key.data().as_ffi(),
+                    ),
+                    x if x == self.openxr.right_hand.subaction_path => (
+                        Hand::Right,
+                        &self.openxr.right_hand,
+                        self.right_hand_key.data().as_ffi(),
+                    ),
+                    _ => unreachable!(),
+                };
+                let Some(bound) = bindings.get(&hand_info.interaction_profile.load()) else {
+                    trace!(
+                        "action has no bindings for the interaction profile {:?}",
+                        hand_info.interaction_profile.load()
+                    );
+                    no_data!()
+                };
+
+                let pose_type = match hand {
+                    Hand::Left => bound.left,
+                    Hand::Right => bound.right,
+                };
+                let Some(ty) = pose_type else {
+                    trace!("action has no bindings for the hand {hand:?}");
+                    no_data!()
+                };
+
+                match ty {
+                    BoundPoseType::Raw | BoundPoseType::Gdc2015 => (active_origin, hand),
                 }
-                x if x == self.openxr.right_hand.subaction_path => {
-                    (action, right_space, self.right_hand_key.data().as_ffi())
+            }
+            Ok(ActionData::Skeleton { hand, .. }) => {
+                if subaction_path != xr::Path::NULL {
+                    return vr::EVRInputError::VRInputError_InvalidDevice;
                 }
-                _ => unreachable!(),
-            },
-            Ok(ActionData::Skeleton {
-                action,
-                space,
-                hand,
-                ..
-            }) => (
-                action,
-                space,
-                match hand {
-                    Hand::Left => self.left_hand_key.data().as_ffi(),
-                    Hand::Right => self.right_hand_key.data().as_ffi(),
-                },
-            ),
+                (0, *hand)
+            }
             Ok(_) => return vr::EVRInputError::VRInputError_WrongType,
             Err(e) => return e,
         };
 
-        let active = action.is_active(&data.session, subaction_path).unwrap();
-        let base = data.get_space_for_origin(origin);
-        let (loc, velo) = space.relate(base, self.openxr.display_time.get()).unwrap();
+        drop(loaded);
+        drop(data);
         unsafe {
             action_data.write(vr::InputPoseActionData_t {
-                bActive: active,
+                bActive: true,
                 activeOrigin: active_origin,
-                pose: space_relation_to_openvr_pose(loc, velo),
-            });
-
-            trace!("pose: {:#?}", (*action_data).pose.mDeviceToAbsoluteTracking)
+                pose: self.get_controller_pose(hand, Some(origin)).expect("wtf"),
+            })
         }
 
         vr::EVRInputError::VRInputError_None
@@ -1135,25 +1171,31 @@ impl<C: openxr_data::Compositor> Input<C> {
         space_relation_to_openvr_pose(hmd_location, hmd_velocity)
     }
 
+    /// Returns None if legacy actions haven't been set up yet.
     pub fn get_controller_pose(
         &self,
         hand: Hand,
         origin: Option<vr::ETrackingUniverseOrigin>,
     ) -> Option<vr::TrackedDevicePose_t> {
         let data = self.openxr.session_data.get();
-        // bail out if legacy actions haven't been set up
         let actions = data.input_data.legacy_actions.get()?;
-        let space = match hand {
-            Hand::Left => &actions.left_space,
-            Hand::Right => &actions.right_space,
+        let spaces = match hand {
+            Hand::Left => &actions.left_spaces,
+            Hand::Right => &actions.right_spaces,
         };
 
-        let (loc, velo) = space
-            .relate(
+        let (loc, velo) = if let Some(raw) =
+            spaces.try_get_or_init_raw(&data, actions, self.openxr.display_time.get())
+        {
+            raw.relate(
                 data.get_space_for_origin(origin.unwrap_or(data.current_origin)),
                 self.openxr.display_time.get(),
             )
-            .unwrap();
+            .unwrap()
+        } else {
+            trace!("failed to get raw space, making empty pose");
+            (xr::SpaceLocation::default(), xr::SpaceVelocity::default())
+        };
 
         Some(space_relation_to_openvr_pose(loc, velo))
     }
@@ -1385,15 +1427,71 @@ impl LoadedActions {
     }
 }
 
+struct HandSpaces {
+    hand_path: xr::Path,
+    grip: xr::Space,
+    aim: xr::Space,
+
+    /// Based on the controller jsons in SteamVR, the "raw" pose
+    /// (which seems to be equivalent to the pose returned by WaitGetPoses)
+    /// is actually the grip pose, but in the same position as the aim pose.
+    /// Using this pose instead of the grip fixes strange controller rotation in
+    /// I Expect You To Die 3.
+    /// This is stored as a space so we can locate hand joints relative to it for skeletal data.
+    raw: OnceLock<xr::Space>,
+}
+
+impl HandSpaces {
+    fn try_get_or_init_raw(
+        &self,
+        data: &SessionData,
+        actions: &LegacyActions,
+        time: xr::Time,
+    ) -> Option<&xr::Space> {
+        if let Some(raw) = self.raw.get() {
+            return Some(raw);
+        }
+
+        // This offset between grip and aim poses should be static,
+        // so it should be fine to only grab it once.
+        let aim_loc = self.aim.locate(&self.grip, time).unwrap();
+        if !aim_loc.location_flags.contains(
+            xr::SpaceLocationFlags::POSITION_VALID | xr::SpaceLocationFlags::ORIENTATION_VALID,
+        ) {
+            trace!("couldn't locate aim pose, no raw space will be created");
+            return None;
+        }
+
+        self.raw
+            .set(
+                actions
+                    .grip_pose
+                    .create_space(
+                        &data.session,
+                        self.hand_path,
+                        xr::Posef {
+                            orientation: xr::Quaternionf::IDENTITY,
+                            position: aim_loc.pose.position,
+                        },
+                    )
+                    .unwrap(),
+            )
+            .unwrap_or_else(|_| unreachable!());
+
+        self.raw.get()
+    }
+}
+
 struct LegacyActions {
     set: xr::ActionSet,
-    pose: xr::Action<xr::Posef>,
+    grip_pose: xr::Action<xr::Posef>,
+    aim_pose: xr::Action<xr::Posef>,
     app_menu: xr::Action<bool>,
     trigger_click: xr::Action<bool>,
     trigger: xr::Action<f32>,
     packet_num: AtomicU32,
-    left_space: xr::Space,
-    right_space: xr::Space,
+    left_spaces: HandSpaces,
+    right_spaces: HandSpaces,
 }
 
 impl LegacyActions {
@@ -1408,7 +1506,12 @@ impl LegacyActions {
         let set = instance
             .create_action_set("xrizer-legacy-set", "XRizer Legacy Set", 0)
             .unwrap();
-        let pose = set.create_action("pose", "Pose", &leftright).unwrap();
+        let grip_pose = set
+            .create_action("grip-pose", "Grip Pose", &leftright)
+            .unwrap();
+        let aim_pose = set
+            .create_action("aim-pose", "Aim Pose", &leftright)
+            .unwrap();
         let trigger_click = set
             .create_action("trigger-click", "Trigger Click", &leftright)
             .unwrap();
@@ -1417,22 +1520,30 @@ impl LegacyActions {
             .create_action("app-menu", "Application Menu", &leftright)
             .unwrap();
 
-        let left_space = pose
-            .create_space(session, left_hand, xr::Posef::IDENTITY)
-            .unwrap();
-        let right_space = pose
-            .create_space(session, right_hand, xr::Posef::IDENTITY)
-            .unwrap();
+        let create_spaces = |hand| HandSpaces {
+            hand_path: hand,
+            grip: grip_pose
+                .create_space(session, hand, xr::Posef::IDENTITY)
+                .unwrap(),
+            aim: aim_pose
+                .create_space(session, hand, xr::Posef::IDENTITY)
+                .unwrap(),
+            raw: OnceLock::new(),
+        };
+
+        let left_spaces = create_spaces(left_hand);
+        let right_spaces = create_spaces(right_hand);
 
         Self {
             set,
-            pose,
+            grip_pose,
+            aim_pose,
             app_menu,
             trigger_click,
             trigger,
             packet_num: 0.into(),
-            left_space,
-            right_space,
+            left_spaces,
+            right_spaces,
         }
     }
 }

@@ -608,6 +608,7 @@ impl vr::IVRCompositor028_Interface for Compositor {
             let game_poses = unsafe {
                 std::slice::from_raw_parts_mut(game_pose_array, game_pose_count as usize)
             };
+            assert!(game_poses.len() <= render_poses.len());
             game_poses.copy_from_slice(&render_poses[0..game_poses.len()]);
         }
 

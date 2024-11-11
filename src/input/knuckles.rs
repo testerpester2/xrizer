@@ -97,7 +97,8 @@ impl InteractionProfile for Knuckles {
             };
         }
 
-        add_binding!(&actions.pose, "input/grip/pose");
+        add_binding!(&actions.grip_pose, "input/grip/pose");
+        add_binding!(&actions.aim_pose, "input/aim/pose");
         add_binding!(&actions.app_menu, "input/b/click");
         add_binding!(&actions.trigger, "input/trigger/value");
         add_binding!(&actions.trigger_click, "input/trigger/click");
@@ -169,15 +170,6 @@ mod tests {
             [
                 "/user/hand/left/output/haptic".into(),
                 "/user/hand/right/output/haptic".into(),
-            ],
-        );
-
-        f.verify_bindings::<xr::Posef>(
-            path,
-            c"/actions/set1/in/pose",
-            [
-                "/user/hand/left/input/grip/pose".into(),
-                "/user/hand/right/input/grip/pose".into(),
             ],
         );
     }

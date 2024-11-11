@@ -48,7 +48,8 @@ impl InteractionProfile for SimpleController {
             };
         }
 
-        both!(&actions.pose, "input/grip/pose");
+        both!(&actions.grip_pose, "input/grip/pose");
+        both!(&actions.aim_pose, "input/aim/pose");
         both!(&actions.trigger, "input/select/click");
         both!(&actions.trigger_click, "input/select/click");
         both!(&actions.app_menu, "input/menu/click");

@@ -82,7 +82,8 @@ impl InteractionProfile for ViveWands {
             };
         }
 
-        both!(&actions.pose, "input/grip/pose");
+        both!(&actions.grip_pose, "input/grip/pose");
+        both!(&actions.aim_pose, "input/aim/pose");
         both!(&actions.trigger, "input/trigger/value");
         both!(&actions.trigger_click, "input/trigger/click");
         both!(&actions.app_menu, "input/menu/click");
@@ -141,15 +142,6 @@ mod tests {
             [
                 "/user/hand/left/output/haptic".into(),
                 "/user/hand/right/output/haptic".into(),
-            ],
-        );
-
-        f.verify_bindings::<xr::Posef>(
-            ViveWands::PROFILE_PATH,
-            c"/actions/set1/in/pose",
-            [
-                "/user/hand/left/input/grip/pose".into(),
-                "/user/hand/right/input/grip/pose".into(),
             ],
         );
     }

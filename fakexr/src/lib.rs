@@ -1,9 +1,10 @@
 pub mod vulkan;
 use crossbeam_utils::atomic::AtomicCell;
+use glam::{Affine3A, Quat, Vec3};
 use openxr_sys as xr;
 use paste::paste;
 use slotmap::{DefaultKey, Key, KeyData, SlotMap};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{c_char, CStr, CString};
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -20,10 +21,65 @@ pub enum ActionState {
 }
 
 pub fn set_action_state(action: xr::Action, state: ActionState) {
-    let action = xr::Action::to_handle(action).unwrap();
+    let action = action.to_handle().unwrap();
     let s = action.state.load();
     assert_eq!(std::mem::discriminant(&state), std::mem::discriminant(&s));
     action.pending_state.store(Some(state));
+}
+
+#[derive(Copy, Clone)]
+pub enum UserPath {
+    /// /user/hand/left
+    LeftHand,
+    /// /user/hand/right
+    RightHand,
+}
+
+impl UserPath {
+    fn from_path(s: &str) -> Option<Self> {
+        match s {
+            "/user/hand/left" => Some(Self::LeftHand),
+            "/user/hand/right" => Some(Self::RightHand),
+            _ => None,
+        }
+    }
+
+    fn to_path(&self) -> &'static str {
+        match self {
+            Self::LeftHand => "/user/hand/left",
+            Self::RightHand => "/user/hand/right",
+        }
+    }
+}
+
+fn get_hand_data(hand: UserPath, session: &Session) -> &HandData {
+    match hand {
+        UserPath::RightHand => &session.right_hand,
+        UserPath::LeftHand => &session.left_hand,
+    }
+}
+
+pub fn set_interaction_profile(session: xr::Session, hand: UserPath, profile: xr::Path) {
+    let s = session.to_handle().unwrap();
+    get_hand_data(hand, &s).profile.store(profile);
+    send_event(
+        &s.event_sender,
+        xr::EventDataInteractionProfileChanged {
+            ty: xr::EventDataInteractionProfileChanged::TYPE,
+            next: std::ptr::null(),
+            session,
+        },
+    );
+}
+
+pub fn set_grip(session: xr::Session, path: UserPath, pose: xr::Posef) {
+    let session = session.to_handle().unwrap();
+    get_hand_data(path, &session).grip_pose.store(pose);
+}
+
+pub fn set_aim(session: xr::Session, path: UserPath, pose: xr::Posef) {
+    let session = session.to_handle().unwrap();
+    get_hand_data(path, &session).aim_pose.store(pose);
 }
 
 #[track_caller]
@@ -37,12 +93,12 @@ pub fn get_suggested_bindings(action: xr::Action, profile: xr::Path) -> Vec<Stri
         .unwrap_or_else(|| {
             panic!(
                 "No suggested bindings for profile {} for action {:?}",
-                instance.get_path_value(profile).unwrap(),
+                instance.get_path_value(profile).unwrap().unwrap(),
                 action.name,
             )
         })
         .iter()
-        .map(|path| instance.get_path_value(*path).unwrap())
+        .map(|path| instance.get_path_value(*path).unwrap().unwrap())
         .collect()
 }
 
@@ -179,7 +235,7 @@ pub extern "system" fn get_instance_proc_addr(
                 (StopHapticFeedback),
                 (PollEvent),
                 StringToPath,
-                (PathToString),
+                PathToString,
                 (GetReferenceSpaceBoundsRect),
                 GetActionStateBoolean,
                 GetActionStateFloat,
@@ -191,7 +247,7 @@ pub extern "system" fn get_instance_proc_addr(
                 DestroyAction,
                 SuggestInteractionProfileBindings,
                 AttachSessionActionSets,
-                (GetCurrentInteractionProfile),
+                GetCurrentInteractionProfile,
                 SyncActions,
                 (EnumerateBoundSourcesForAction),
                 (GetInputSourceLocalizedName)
@@ -242,7 +298,7 @@ trait Handle: 'static {
 trait XrType {
     type Handle: Handle;
     const TO_RAW: fn(Self) -> u64;
-    fn to_handle(xr: Self) -> Option<Arc<Self::Handle>>;
+    fn to_handle(self) -> Option<Arc<Self::Handle>>;
 }
 
 macro_rules! get_handle {
@@ -250,6 +306,7 @@ macro_rules! get_handle {
         match <_ as XrType>::to_handle($handle) {
             Some(handle) => handle,
             None => {
+                println!("unknown handle for {} ({:?})", stringify!($handle), $handle);
                 return xr::Result::ERROR_HANDLE_INVALID;
             }
         }
@@ -261,9 +318,9 @@ macro_rules! impl_handle {
         impl XrType for $xr_type {
             type Handle = $ty;
             const TO_RAW: fn(Self) -> u64 = <$xr_type>::into_raw;
-            fn to_handle(xr: $xr_type) -> Option<Arc<Self::Handle>> {
+            fn to_handle(self) -> Option<Arc<Self::Handle>> {
                 Self::Handle::instances()
-                    .get(DefaultKey::from(KeyData::from_ffi(xr.into_raw())))
+                    .get(DefaultKey::from(KeyData::from_ffi(self.into_raw())))
                     .map(|i| Arc::clone(i))
             }
         }
@@ -292,10 +349,33 @@ struct Instance {
 }
 
 impl Instance {
-    fn get_path_value(&self, path: xr::Path) -> Option<String> {
-        let key = DefaultKey::from(KeyData::from_ffi(path.into_raw()));
-        self.paths.lock().unwrap().get(key).cloned()
+    fn get_path_value(&self, path: xr::Path) -> Result<Option<String>, ()> {
+        if path == xr::Path::NULL {
+            Ok(None)
+        } else {
+            let key = DefaultKey::from(KeyData::from_ffi(path.into_raw()));
+            self.paths
+                .lock()
+                .unwrap()
+                .get(key)
+                .cloned()
+                .map(|s| Some(s))
+                .ok_or(())
+        }
     }
+
+    fn get_user_path(&self, path: xr::Path) -> Result<Option<UserPath>, ()> {
+        Ok(self
+            .get_path_value(path)?
+            .and_then(|v| UserPath::from_path(&v)))
+    }
+}
+
+#[derive(Default)]
+struct HandData {
+    profile: AtomicCell<xr::Path>,
+    grip_pose: AtomicCell<xr::Posef>,
+    aim_pose: AtomicCell<xr::Posef>,
 }
 
 struct Session {
@@ -303,6 +383,108 @@ struct Session {
     event_sender: mpsc::Sender<EventDataBuffer>,
     vk_device: AtomicU64,
     attached_sets: OnceLock<Box<[xr::ActionSet]>>,
+    left_hand: HandData,
+    right_hand: HandData,
+    spaces: Mutex<HashSet<DefaultKey>>,
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        let spaces = self.spaces.lock().unwrap();
+        for space in spaces.iter() {
+            Space::instances().remove(*space);
+        }
+    }
+}
+
+static LOCATION_FLAGS_TRACKED: LazyLock<xr::SpaceLocationFlags> = LazyLock::new(|| {
+    xr::SpaceLocationFlags::POSITION_VALID
+        | xr::SpaceLocationFlags::POSITION_TRACKED
+        | xr::SpaceLocationFlags::ORIENTATION_VALID
+        | xr::SpaceLocationFlags::ORIENTATION_TRACKED
+});
+
+struct Space {
+    hand: Option<UserPath>,
+    offset: xr::Posef,
+    session: Weak<Session>,
+    action: Weak<Action>,
+}
+
+impl Space {
+    fn get_pose_relative_to_local(&self) -> Result<xr::SpaceLocation, xr::Result> {
+        let default = || xr::SpaceLocation {
+            ty: xr::SpaceLocation::TYPE,
+            next: std::ptr::null_mut(),
+            location_flags: xr::SpaceLocationFlags::default(),
+            pose: xr::Posef::default(),
+        };
+        let session = self
+            .session
+            .upgrade()
+            .ok_or(xr::Result::ERROR_SESSION_LOST)?;
+
+        // Check if this hand has an interaction profile
+        let hand = self.hand.unwrap_or(UserPath::LeftHand);
+        let hand_data = match hand {
+            UserPath::LeftHand => &session.left_hand,
+            UserPath::RightHand => &session.right_hand,
+        };
+        let hand_path = hand.to_path();
+        let profile = match hand_data.profile.load() {
+            xr::Path::NULL => {
+                // no profile - no data
+                return Ok(default());
+            }
+            other => other,
+        };
+
+        // Check if this action has bindings for the current profile
+        let action = self.action.upgrade().unwrap();
+        let bindings = action.suggested.lock().unwrap();
+        let Some(bindings) = bindings.get(&profile) else {
+            return Ok(default());
+        };
+
+        // Find what it's bound to
+        let instance = session
+            .instance
+            .upgrade()
+            .ok_or(xr::Result::ERROR_SESSION_LOST)?;
+
+        let binding = bindings
+            .iter()
+            .copied()
+            .find_map(|p| {
+                let val = instance.get_path_value(p).unwrap().unwrap();
+                val.starts_with(hand_path).then_some(val)
+            })
+            .expect(&format!(
+                "expected binding for space for action {:?}",
+                action.name
+            ));
+
+        let pose = match binding.strip_prefix(hand.to_path()).unwrap() {
+            "/input/grip/pose" => hand_data.grip_pose.load(),
+            "/input/aim/pose" => hand_data.aim_pose.load(),
+            other => panic!(
+                "unrecognized pose binding {other} for action {:?}",
+                action.name
+            ),
+        };
+
+        let mat = pose_to_mat(pose);
+        let offset = pose_to_mat(self.offset);
+
+        let ret = mat_to_pose(mat * offset);
+
+        Ok(xr::SpaceLocation {
+            ty: xr::SpaceLocation::TYPE,
+            next: std::ptr::null_mut(),
+            location_flags: *LOCATION_FLAGS_TRACKED,
+            pose: ret,
+        })
+    }
 }
 
 struct ActionSet {
@@ -334,6 +516,7 @@ impl_handle!(Instance, xr::Instance);
 impl_handle!(Session, xr::Session);
 impl_handle!(ActionSet, xr::ActionSet);
 impl_handle!(Action, xr::Action);
+impl_handle!(Space, xr::Space);
 
 fn destroy_handle<T: XrType>(xr: T) -> xr::Result {
     T::Handle::instances().remove(DefaultKey::from(KeyData::from_ffi(T::TO_RAW(xr))));
@@ -345,11 +528,26 @@ extern "system" fn create_instance(
     instance: *mut xr::Instance,
 ) -> xr::Result {
     let (tx, rx) = mpsc::channel();
+
+    let (left, right) = (
+        "/user/hand/left".to_string(),
+        "/user/hand/right".to_string(),
+    );
+    let mut paths = SlotMap::new();
+    let mut string_to_path = HashMap::new();
+    paths.insert_with_key(|key| {
+        string_to_path.insert(left.clone(), key);
+        left
+    });
+    paths.insert_with_key(|key| {
+        string_to_path.insert(right.clone(), key);
+        right
+    });
     let inst = Arc::new(Instance {
         event_receiver: rx.into(),
         event_sender: tx,
-        paths: Default::default(),
-        string_to_path: Default::default(),
+        paths: Mutex::new(paths),
+        string_to_path: Mutex::new(string_to_path),
     });
     unsafe {
         *instance = inst.to_xr();
@@ -379,6 +577,9 @@ extern "system" fn create_session(
         event_sender: instance.event_sender.clone(),
         vk_device: (vk.device as u64).into(),
         attached_sets: OnceLock::new(),
+        left_hand: Default::default(),
+        right_hand: Default::default(),
+        spaces: Default::default(),
     });
 
     let tx = sess.event_sender.clone();
@@ -514,10 +715,33 @@ extern "system" fn destroy_action(action: xr::Action) -> xr::Result {
 }
 
 extern "system" fn create_action_space(
-    _: xr::Session,
-    _: *const xr::ActionSpaceCreateInfo,
-    _: *mut xr::Space,
+    session: xr::Session,
+    info: *const xr::ActionSpaceCreateInfo,
+    space: *mut xr::Space,
 ) -> xr::Result {
+    let session = get_handle!(session);
+    let info = unsafe { info.as_ref() }.unwrap();
+    let action = get_handle!(info.action);
+    if !matches!(action.state.load(), ActionState::Pose) {
+        return xr::Result::ERROR_ACTION_TYPE_MISMATCH;
+    }
+
+    let Some(instance) = session.instance.upgrade() else {
+        return xr::Result::ERROR_INSTANCE_LOST;
+    };
+    let Ok(hand) = instance.get_user_path(info.subaction_path) else {
+        return xr::Result::ERROR_PATH_INVALID;
+    };
+    let s = Arc::new(Space {
+        hand,
+        offset: info.pose_in_action_space,
+        session: Arc::downgrade(&session),
+        action: Arc::downgrade(&action),
+    });
+    let key = Space::instances().insert(s);
+    let mut spaces = session.spaces.lock().unwrap();
+    spaces.insert(key);
+    unsafe { space.write(xr::Space::from_raw(key.data().as_ffi())) };
     xr::Result::SUCCESS
 }
 
@@ -546,9 +770,13 @@ extern "system" fn begin_session(_: xr::Session, _: *const xr::SessionBeginInfo)
     xr::Result::SUCCESS
 }
 
-extern "system" fn destroy_space(_: xr::Space) -> xr::Result {
-    xr::Result::SUCCESS
+extern "system" fn destroy_space(space: xr::Space) -> xr::Result {
+    destroy_handle(space)
 }
+
+static VIEW: LazyLock<xr::Space> = LazyLock::new(|| xr::Space::from_raw(1));
+static LOCAL: LazyLock<xr::Space> = LazyLock::new(|| xr::Space::from_raw(2));
+static STAGE: LazyLock<xr::Space> = LazyLock::new(|| xr::Space::from_raw(3));
 
 extern "system" fn create_reference_space(
     _: xr::Session,
@@ -556,15 +784,14 @@ extern "system" fn create_reference_space(
     space: *mut xr::Space,
 ) -> xr::Result {
     let info = unsafe { create_info.as_ref().unwrap() };
-    let val = match info.reference_space_type {
-        xr::ReferenceSpaceType::VIEW => 1,
-        xr::ReferenceSpaceType::LOCAL => 2,
-        xr::ReferenceSpaceType::STAGE => 3,
-        other => panic!("unimplemented reference space type: {other:?}"),
-    };
-
+    assert_eq!(info.pose_in_reference_space, xr::Posef::IDENTITY);
     unsafe {
-        *space = xr::Space::from_raw(val);
+        *space = match info.reference_space_type {
+            xr::ReferenceSpaceType::VIEW => *VIEW,
+            xr::ReferenceSpaceType::LOCAL => *LOCAL,
+            xr::ReferenceSpaceType::STAGE => *STAGE,
+            other => panic!("unimplemented reference space type: {other:?}"),
+        };
     }
     xr::Result::SUCCESS
 }
@@ -608,6 +835,29 @@ extern "system" fn string_to_path(
     };
 
     unsafe { path.write(xr::Path::from_raw(key.data().as_ffi())) };
+
+    xr::Result::SUCCESS
+}
+
+extern "system" fn path_to_string(
+    instance: xr::Instance,
+    path: xr::Path,
+    capacity: u32,
+    output: *mut u32,
+    buffer: *mut c_char,
+) -> xr::Result {
+    let instance = get_handle!(instance);
+    let key = DefaultKey::from(KeyData::from_ffi(path.into_raw()));
+    let paths = instance.paths.lock().unwrap();
+    let Some(val) = paths.get(key) else {
+        return xr::Result::ERROR_PATH_INVALID;
+    };
+    let buf = [val.as_bytes(), &[0]].concat();
+    unsafe { output.write(buf.len() as u32) };
+    if capacity > 0 && capacity >= buf.len() as u32 {
+        let out = unsafe { std::slice::from_raw_parts_mut(buffer as *mut _, capacity as usize) };
+        out[0..buf.len()].copy_from_slice(&buf);
+    }
 
     xr::Result::SUCCESS
 }
@@ -827,15 +1077,89 @@ extern "system" fn get_action_state_vector2f(
     xr::Result::SUCCESS
 }
 
-extern "system" fn locate_space(
-    _space: xr::Space,
-    _base_space: xr::Space,
-    _time: xr::Time,
-    _location: *mut xr::SpaceLocation,
+extern "system" fn get_current_interaction_profile(
+    session: xr::Session,
+    user_path: xr::Path,
+    state: *mut xr::InteractionProfileState,
 ) -> xr::Result {
+    let session = get_handle!(session);
+    let Some(instance) = session.instance.upgrade() else {
+        return xr::Result::ERROR_INSTANCE_LOST;
+    };
+    let Ok(val) = instance.get_path_value(user_path) else {
+        return xr::Result::ERROR_PATH_INVALID;
+    };
+    let profile = match val.as_ref().map(String::as_str) {
+        Some("/user/hand/left") => session.left_hand.profile.load(),
+        Some("/user/hand/right") => session.right_hand.profile.load(),
+        _ => xr::Path::NULL,
+    };
+
+    unsafe {
+        state.write(xr::InteractionProfileState {
+            ty: xr::InteractionProfileState::TYPE,
+            next: std::ptr::null_mut(),
+            interaction_profile: profile,
+        })
+    }
+
     xr::Result::SUCCESS
 }
 
+extern "system" fn locate_space(
+    space: xr::Space,
+    base_space: xr::Space,
+    _time: xr::Time,
+    location: *mut xr::SpaceLocation,
+) -> xr::Result {
+    assert!(
+        base_space != *STAGE && base_space != *VIEW,
+        "stage/view locate unimplemented"
+    );
+    assert_ne!(space, *LOCAL);
+
+    let space = get_handle!(space);
+    let mut out_loc = xr::SpaceLocation {
+        ty: xr::SpaceLocation::TYPE,
+        next: std::ptr::null_mut(),
+        location_flags: xr::SpaceLocationFlags::EMPTY,
+        pose: xr::Posef::IDENTITY,
+    };
+    if base_space == *LOCAL {
+        match space.get_pose_relative_to_local() {
+            Ok(loc) => {
+                out_loc = loc;
+            }
+            Err(e) => return e,
+        };
+    } else {
+        let base_space = get_handle!(base_space);
+        let base_loc = match base_space.get_pose_relative_to_local() {
+            Ok(loc) => loc,
+            Err(e) => return e,
+        };
+
+        let target_loc = match space.get_pose_relative_to_local() {
+            Ok(loc) => loc,
+            Err(e) => return e,
+        };
+
+        if base_loc.location_flags.contains(*LOCATION_FLAGS_TRACKED)
+            && target_loc.location_flags.contains(*LOCATION_FLAGS_TRACKED)
+        {
+            out_loc.location_flags = *LOCATION_FLAGS_TRACKED;
+            let base_mat = pose_to_mat(base_loc.pose);
+            let target_mat = pose_to_mat(target_loc.pose);
+
+            let out_mat = base_mat.inverse() * target_mat;
+            out_loc.pose = mat_to_pose(out_mat);
+        }
+    }
+
+    unsafe { location.write(out_loc) }
+
+    xr::Result::SUCCESS
+}
 extern "system" fn create_swapchain(
     _session: xr::Session,
     _info: *const xr::SwapchainCreateInfo,
@@ -908,4 +1232,33 @@ extern "system" fn begin_frame(
 
 extern "system" fn end_frame(_session: xr::Session, _info: *const xr::FrameEndInfo) -> xr::Result {
     xr::Result::SUCCESS
+}
+
+fn pose_to_mat(
+    xr::Posef {
+        position: p,
+        orientation: r,
+    }: xr::Posef,
+) -> Affine3A {
+    Affine3A::from_rotation_translation(
+        Quat::from_xyzw(r.x, r.y, r.z, r.w),
+        Vec3::new(p.x, p.y, p.z),
+    )
+}
+
+fn mat_to_pose(mat: Affine3A) -> xr::Posef {
+    let (_, rot, pos) = mat.to_scale_rotation_translation();
+    xr::Posef {
+        orientation: xr::Quaternionf {
+            x: rot.x,
+            y: rot.y,
+            z: rot.z,
+            w: rot.w,
+        },
+        position: xr::Vector3f {
+            x: pos.x,
+            y: pos.y,
+            z: pos.z,
+        },
+    }
 }

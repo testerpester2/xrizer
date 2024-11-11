@@ -1,4 +1,4 @@
-use super::{knuckles::Knuckles, vive_controller::ViveWands, Input};
+use super::{knuckles::Knuckles, vive_controller::ViveWands, BoundPoseType, Input};
 use crate::{
     openxr_data::{self, Hand, SessionData},
     vr,
@@ -333,36 +333,14 @@ fn load_actions(
                     last_value: (super::AtomicF32::new(0.0), super::AtomicF32::new(0.0)),
                 },
             ),
-            ActionType::Pose(data) => {
-                let action = create_action!(xr::Posef, data);
-                let left_space = action
-                    .create_space(session, left_hand, xr::Posef::IDENTITY)
-                    .unwrap();
-                let right_space = action
-                    .create_space(session, right_hand, xr::Posef::IDENTITY)
-                    .unwrap();
-                (
-                    &data.name,
-                    Pose {
-                        action,
-                        left_space,
-                        right_space,
-                    },
-                )
-            }
+            ActionType::Pose(data) => (
+                &data.name,
+                Pose {
+                    bindings: Default::default(),
+                },
+            ),
             ActionType::Skeleton(SkeletonData { skeleton, data }) => {
-                let action = create_action!(xr::Posef, data);
-                let space = action
-                    .create_space(
-                        session,
-                        match skeleton {
-                            Hand::Left => left_hand,
-                            Hand::Right => right_hand,
-                        },
-                        xr::Posef::IDENTITY,
-                    )
-                    .unwrap();
-
+                trace!("Creating skeleton action {}", data.name.to_lowercase());
                 let hand_tracker = match session.create_hand_tracker(match skeleton {
                     Hand::Left => xr::Hand::LEFT,
                     Hand::Right => xr::Hand::RIGHT,
@@ -378,8 +356,6 @@ fn load_actions(
                 (
                     &data.name,
                     Skeleton {
-                        action,
-                        space,
                         hand: *skeleton,
                         hand_tracker,
                     },
@@ -404,9 +380,46 @@ struct Bindings {
 #[derive(Deserialize)]
 struct ActionSetBinding {
     sources: Vec<ActionBinding>,
-    poses: Option<Vec<SimpleActionBinding>>,
+    poses: Option<Vec<PoseBinding>>,
     haptics: Option<Vec<SimpleActionBinding>>,
     skeleton: Option<Vec<SkeletonActionBinding>>,
+}
+
+#[derive(Deserialize)]
+struct PoseBinding {
+    output: String,
+    #[serde(deserialize_with = "parse_pose_binding")]
+    path: (Hand, BoundPoseType),
+}
+
+fn parse_pose_binding<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<(Hand, BoundPoseType), D::Error> {
+    let pose_path: &str = Deserialize::deserialize(d)?;
+
+    let (hand, pose) = pose_path.rsplit_once('/').ok_or(D::Error::invalid_value(
+        Unexpected::Str(pose_path),
+        &"a value matching /user/hand/{left,right}/pose/<pose>",
+    ))?;
+
+    let hand = match hand {
+        "/user/hand/left/pose" => Hand::Left,
+        "/user/hand/right/pose" => Hand::Right,
+        _ => {
+            return Err(D::Error::unknown_variant(
+                hand,
+                &["/user/hand/left/pose", "/user/hand/right/pose"],
+            ))
+        }
+    };
+
+    let pose = match pose {
+        "raw" => BoundPoseType::Raw,
+        "gdc2015" => BoundPoseType::Gdc2015,
+        other => return Err(D::Error::unknown_variant(other, &["raw", "gdc2015"])),
+    };
+
+    Ok((hand, pose))
 }
 
 #[derive(Deserialize)]
@@ -730,6 +743,17 @@ impl<C: openxr_data::Compositor> Input<C> {
         bindings: &HashMap<String, ActionSetBinding>,
     ) {
         info!("loading bindings for {}", P::PROFILE_PATH);
+
+        // Workaround weird closure lifetime quirks.
+        const fn constrain<F>(f: F) -> F
+        where
+            F: for<'a> Fn(&'a str) -> openxr::Path,
+        {
+            f
+        }
+        let stp = constrain(|s| self.openxr.instance.string_to_path(s).unwrap());
+        let legacy_bindings = P::legacy_bindings(stp, &legacy_actions);
+        let profile_path = stp(P::PROFILE_PATH);
         let legal_paths = P::legal_paths();
         let translate_map = P::TRANSLATE_MAP;
         let path_translator = |path: &str| {
@@ -767,20 +791,11 @@ impl<C: openxr_data::Compositor> Input<C> {
             }
 
             if let Some(bindings) = &bindings.poses {
-                xr_bindings.extend(handle_pose_bindings(
-                    &self.openxr.instance,
-                    path_translator,
-                    actions,
-                    bindings,
-                ));
+                handle_pose_bindings(profile_path, actions, bindings);
             }
 
             if let Some(bindings) = &bindings.skeleton {
-                xr_bindings.extend(handle_skeleton_bindings(
-                    &self.openxr.instance,
-                    actions,
-                    bindings,
-                ));
+                handle_skeleton_bindings(actions, bindings);
             }
 
             xr_bindings.extend(handle_sources(
@@ -793,17 +808,6 @@ impl<C: openxr_data::Compositor> Input<C> {
             ));
         }
 
-        // Workaround weird closure lifetime quirks.
-        const fn constrain<F>(f: F) -> F
-        where
-            F: for<'a> Fn(&'a str) -> openxr::Path,
-        {
-            f
-        }
-        let stp = constrain(|s| self.openxr.instance.string_to_path(s).unwrap());
-        let legacy_bindings = P::legacy_bindings(stp, &legacy_actions);
-        let profile_path = stp(P::PROFILE_PATH);
-
         let bindings: Vec<xr::Binding<'_>> = xr_bindings
             .into_iter()
             .map(|(name, path)| {
@@ -813,8 +817,7 @@ impl<C: openxr_data::Compositor> Input<C> {
                     Vector1 { action, .. } => xr::Binding::new(&action, path),
                     Vector2 { action, .. } => xr::Binding::new(&action, path),
                     Haptic(action) => xr::Binding::new(&action, path),
-                    Skeleton { action, .. } => xr::Binding::new(&action, path),
-                    Pose { action, .. } => xr::Binding::new(&action, path),
+                    Skeleton { .. } | Pose { .. } => unreachable!(),
                 }
             })
             .chain(legacy_bindings)
@@ -1306,39 +1309,18 @@ fn handle_sources(
     bindings
 }
 
-fn handle_skeleton_bindings(
-    instance: &xr::Instance,
-    actions: &LoadedActionDataMap,
-    bindings: &[SkeletonActionBinding],
-) -> Vec<(String, xr::Path)> {
-    let mut ret = Vec::new();
+fn handle_skeleton_bindings(actions: &LoadedActionDataMap, bindings: &[SkeletonActionBinding]) {
     for SkeletonActionBinding { output, path } in bindings {
+        trace!("binding skeleton action {output} to {path:?}");
         if !find_action(actions, output) {
             continue;
         };
-        let path = match path {
-            Hand::Left => {
-                trace!("suggested left grip for {output}");
-                instance
-                    .string_to_path("/user/hand/left/input/grip/pose")
-                    .unwrap()
-            }
-            Hand::Right => {
-                trace!("suggested right grip for {output}");
-                instance
-                    .string_to_path("/user/hand/right/input/grip/pose")
-                    .unwrap()
-            }
-        };
 
-        assert!(matches!(
-            actions[output],
-            super::ActionData::Skeleton { .. }
-        ));
-        ret.push((output.clone(), path));
+        match &actions[output] {
+            super::ActionData::Skeleton { hand, .. } => assert_eq!(hand, path),
+            _ => panic!("Expected skeleton action for skeleton binding {output}"),
+        }
     }
-
-    ret
 }
 
 fn handle_haptic_bindings(
@@ -1371,29 +1353,35 @@ fn handle_haptic_bindings(
 }
 
 fn handle_pose_bindings(
-    instance: &xr::Instance,
-    path_translator: impl Fn(&str) -> Result<String, String>,
-    actions: &LoadedActionDataMap,
-    bindings: &[SimpleActionBinding],
-) -> Vec<(String, xr::Path)> {
-    let mut ret = Vec::new();
-
-    for SimpleActionBinding { output, path } in bindings {
-        let Ok(translated) = path_translator(&path).inspect_err(translate_warn(output)) else {
-            continue;
-        };
-
+    profile_path: xr::Path,
+    actions: &mut LoadedActionDataMap,
+    bindings: &[PoseBinding],
+) {
+    for PoseBinding {
+        output,
+        path: (hand, pose_ty),
+    } in bindings
+    {
         if !find_action(actions, output) {
             continue;
         };
 
-        let xr_path = instance.string_to_path(&translated).unwrap();
-        assert!(matches!(actions[output], super::ActionData::Pose { .. }));
+        let super::ActionData::Pose { bindings, .. } = actions.get_mut(output).unwrap() else {
+            panic!("Expected pose action for pose binding on {output}");
+        };
 
-        ret.push((output.clone(), xr_path));
+        let bound = bindings.entry(profile_path).or_insert(super::BoundPose {
+            left: None,
+            right: None,
+        });
+
+        let b = match hand {
+            Hand::Left => &mut bound.left,
+            Hand::Right => &mut bound.right,
+        };
+        assert!(b.replace(*pose_ty).is_none());
+        trace!("bound {:?} to pose {output} for hand {hand:?}", *pose_ty);
     }
-
-    ret
 }
 
 pub(super) struct PathTranslation {

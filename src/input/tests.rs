@@ -1,10 +1,12 @@
-use super::{ActionData, Input};
+use super::{knuckles::Knuckles, ActionData, Input, InteractionProfile};
 use crate::{
     openxr_data::OpenXrData,
     vr::{self, IVRInput010_Interface},
 };
+use glam::{Mat3, Quat, Vec3};
 use openxr as xr;
 use std::collections::HashSet;
+use std::f32::consts::FRAC_PI_4;
 use std::ffi::CStr;
 use std::sync::Arc;
 use vr::EVRInputError::*;
@@ -76,7 +78,7 @@ impl_action_type!(bool, "boolean", ActionData::Bool(a) => a.action.as_raw());
 impl_action_type!(f32, "vector1", ActionData::Vector1{ action, .. } => action.as_raw());
 impl_action_type!(xr::Vector2f, "vector2", ActionData::Vector2{ action, .. } => action.as_raw());
 impl_action_type!(xr::Haptic, "haptic", ActionData::Haptic(a) => a.as_raw());
-impl_action_type!(xr::Posef, "pose", ActionData::Pose { action, .. } => action.as_raw());
+//impl_action_type!(xr::Posef, "pose", ActionData::Pose { action, .. } => action.as_raw());
 
 impl Fixture {
     pub fn new() -> Self {
@@ -215,6 +217,23 @@ impl Fixture {
         } else {
             Ok(state)
         }
+    }
+
+    fn set_interaction_profile<T: InteractionProfile>(&self, hand: fakexr::UserPath) {
+        fakexr::set_interaction_profile(
+            self.raw_session(),
+            hand,
+            self.input
+                .openxr
+                .instance
+                .string_to_path(T::PROFILE_PATH)
+                .unwrap(),
+        );
+        self.input.openxr.poll_events();
+    }
+
+    fn raw_session(&self) -> xr::sys::Session {
+        self.input.openxr.session_data.get().session.as_raw()
     }
 }
 
@@ -500,4 +519,202 @@ fn dpad_input_different_sets_have_different_actions() {
     get_dpad_action!(f, boolact_set2, set2_dpad);
 
     assert_ne!(set1_dpad.parent.as_raw(), set2_dpad.parent.as_raw());
+}
+
+#[track_caller]
+fn compare_pose(expected: xr::Posef, actual: xr::Posef) {
+    let epos = expected.position;
+    let apos = actual.position;
+    assert!(
+        (apos.x - epos.x).abs() < f32::EPSILON
+            && (apos.y - epos.y).abs() < f32::EPSILON
+            && (apos.z - epos.z).abs() < f32::EPSILON,
+        "expected position: {epos:?}\nactual position: {apos:?}"
+    );
+
+    let erot = expected.orientation;
+    let arot = actual.orientation;
+    assert!(
+        arot.x == erot.x && arot.y == erot.y && arot.z == erot.z && arot.w == erot.w,
+        "expected orientation: {erot:?}\nactual orientation: {arot:?}",
+    );
+}
+
+fn hmdmatrix34_to_pose(mat: vr::HmdMatrix34_t) -> xr::Posef {
+    let mat = mat.m;
+    let pos = xr::Vector3f {
+        x: mat[0][3],
+        y: mat[1][3],
+        z: mat[2][3],
+    };
+    let rot = Quat::from_mat3(
+        &Mat3::from_cols(
+            Vec3::from_slice(&mat[0][..3]),
+            Vec3::from_slice(&mat[1][..3]),
+            Vec3::from_slice(&mat[2][..3]),
+        )
+        .transpose(),
+    );
+    xr::Posef {
+        position: pos,
+        orientation: xr::Quaternionf {
+            x: rot.x,
+            y: rot.y,
+            z: rot.z,
+            w: rot.w,
+        },
+    }
+}
+
+#[test]
+fn raw_pose_is_grip_at_aim() {
+    let f = Fixture::new();
+
+    let pose_handle = f.get_action_handle(c"/actions/set1/in/pose");
+    let left_hand = {
+        let mut h = 0;
+        assert_eq!(
+            f.input
+                .GetInputSourceHandle(c"/user/hand/left".as_ptr(), &mut h),
+            VRInputError_None
+        );
+        h
+    };
+    f.load_actions(c"actions.json");
+    f.set_interaction_profile::<Knuckles>(fakexr::UserPath::LeftHand);
+
+    let grip_rot = Quat::from_rotation_x(-FRAC_PI_4);
+    let grip = xr::Posef {
+        position: xr::Vector3f {
+            x: 0.5,
+            y: 0.5,
+            z: 0.5,
+        },
+        orientation: xr::Quaternionf {
+            x: grip_rot.x,
+            y: grip_rot.y,
+            z: grip_rot.z,
+            w: grip_rot.w,
+        },
+    };
+
+    fakexr::set_grip(f.raw_session(), fakexr::UserPath::LeftHand, grip);
+
+    let aim = xr::Posef {
+        position: xr::Vector3f {
+            x: 0.7,
+            y: 0.6,
+            z: 1.0,
+        },
+        orientation: xr::Quaternionf::IDENTITY,
+    };
+
+    fakexr::set_aim(f.raw_session(), fakexr::UserPath::LeftHand, aim);
+
+    let mut data = Default::default();
+    assert_eq!(
+        f.input.GetPoseActionDataForNextFrame(
+            pose_handle,
+            vr::ETrackingUniverseOrigin::TrackingUniverseSeated,
+            &mut data,
+            std::mem::size_of_val(&data) as u32,
+            left_hand,
+        ),
+        VRInputError_None
+    );
+
+    assert_eq!(data.bActive, true);
+    assert_eq!(data.activeOrigin, left_hand);
+
+    let pose = data.pose;
+    assert_eq!(pose.bDeviceIsConnected, true);
+    assert_eq!(pose.bPoseIsValid, true);
+    assert_eq!(
+        pose.eTrackingResult,
+        vr::ETrackingResult::TrackingResult_Running_OK
+    );
+
+    compare_pose(
+        xr::Posef {
+            position: aim.position,
+            orientation: grip.orientation,
+        },
+        hmdmatrix34_to_pose(pose.mDeviceToAbsoluteTracking),
+    );
+}
+
+#[test]
+fn raw_pose_waitgetposes_and_skeletal_pose_identical() {
+    let f = Fixture::new();
+    let left_hand = {
+        let mut h = 0;
+        assert_eq!(
+            f.input
+                .GetInputSourceHandle(c"/user/hand/left".as_ptr(), &mut h),
+            VRInputError_None
+        );
+        h
+    };
+    let pose_handle = f.get_action_handle(c"/actions/set1/in/pose");
+    let skel_handle = f.get_action_handle(c"/actions/set1/in/skellyl");
+    f.load_actions(c"actions.json");
+    f.set_interaction_profile::<Knuckles>(fakexr::UserPath::LeftHand);
+    let rot = Quat::from_rotation_x(-FRAC_PI_4);
+    let pose = xr::Posef {
+        position: xr::Vector3f {
+            x: 0.5,
+            y: 0.5,
+            z: 0.5,
+        },
+        orientation: xr::Quaternionf {
+            x: rot.x,
+            y: rot.y,
+            z: rot.z,
+            w: rot.w,
+        },
+    };
+    fakexr::set_grip(f.raw_session(), fakexr::UserPath::LeftHand, pose);
+    fakexr::set_aim(f.raw_session(), fakexr::UserPath::LeftHand, pose);
+
+    let seated_origin = vr::ETrackingUniverseOrigin::TrackingUniverseSeated;
+    let waitgetposes_pose = f
+        .input
+        .get_controller_pose(super::Hand::Left, Some(seated_origin))
+        .expect("WaitGetPoses should succeed");
+
+    let mut raw_pose = vr::InputPoseActionData_t {
+        pose: vr::TrackedDevicePose_t {
+            eTrackingResult: vr::ETrackingResult::TrackingResult_Running_OutOfRange,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut skel_pose = raw_pose;
+
+    let ret = f.input.GetPoseActionDataForNextFrame(
+        pose_handle,
+        seated_origin,
+        &mut raw_pose,
+        std::mem::size_of_val(&raw_pose) as u32,
+        left_hand,
+    );
+    assert_eq!(ret, VRInputError_None);
+    compare_pose(
+        hmdmatrix34_to_pose(waitgetposes_pose.mDeviceToAbsoluteTracking),
+        hmdmatrix34_to_pose(raw_pose.pose.mDeviceToAbsoluteTracking),
+    );
+
+    let ret = f.input.GetPoseActionDataForNextFrame(
+        skel_handle,
+        seated_origin,
+        &mut skel_pose,
+        std::mem::size_of_val(&skel_pose) as u32,
+        0,
+    );
+    assert_eq!(ret, VRInputError_None);
+
+    compare_pose(
+        hmdmatrix34_to_pose(waitgetposes_pose.mDeviceToAbsoluteTracking),
+        hmdmatrix34_to_pose(skel_pose.pose.mDeviceToAbsoluteTracking),
+    );
 }

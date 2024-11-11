@@ -8,7 +8,7 @@
 				},
 				{
 					"output": "/actions/set1/in/pose",
-					"path": "/user/hand/right/pose/raw"
+					"path": "/user/hand/right/pose/gdc2015"
 				}
 			],
 			"haptics": [
@@ -27,7 +27,7 @@
 					"path": "/user/hand/left/input/skeleton/left"
 				},
 				{
-					"output": "/actions/set1/in/skellyl",
+					"output": "/actions/set1/in/skellyr",
 					"path": "/user/hand/right/input/skeleton/right"
 				}
 			],
