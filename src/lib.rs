@@ -21,6 +21,12 @@ include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
 use bindings::vr;
 
+impl Default for vr::ETrackingResult {
+    fn default() -> Self {
+        Self::TrackingResult_Uninitialized
+    }
+}
+
 /// Types that are interfaces. Should only be implemented by generated code.
 unsafe trait OpenVrInterface: 'static {
     type Vtable: Sync;

@@ -19,14 +19,25 @@ macro_rules! dbg {
     }
 }
 
+// Bindgen will generate UB for the Default implementation of structs
+// that have a rustified enum member.
+// We will instead manually place a derive(Default) on these.
+// https://github.com/rust-lang/rust-bindgen/issues/2974
+static MANUAL_DERIVE_DEFAULT: &[&'static str] = &[
+    // Have a vr::ETrackingResult member
+    "TrackedDevicePose_t",
+    "InputPoseActionData_t",
+];
+
 #[derive(Debug)]
 struct Callbacks;
 
 impl ParseCallbacks for Callbacks {
     fn add_derives(&self, info: &bindgen::callbacks::DeriveInfo<'_>) -> Vec<String> {
-        if info.kind == bindgen::callbacks::TypeKind::Enum && !info.name.ends_with("EVRSubmitFlags")
+        if info.kind == bindgen::callbacks::TypeKind::Struct
+            && MANUAL_DERIVE_DEFAULT.contains(&info.name)
         {
-            vec!["num_enum::TryFromPrimitive".to_string()]
+            vec!["Default".to_string()]
         } else {
             Vec::new()
         }
@@ -90,6 +101,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .allowlist_item(&format!("vr.*::{interface}_Version"));
     }
 
+    for s in MANUAL_DERIVE_DEFAULT {
+        builder = builder.no_default(&format!("vr.*::{s}"));
+    }
     let bindings = builder
         .clang_args([
             "-x",

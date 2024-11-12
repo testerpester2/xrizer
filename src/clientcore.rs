@@ -303,7 +303,7 @@ impl<T: InterfaceImpl> Injected<T> {
                         .lock()
                         .unwrap()
                         .entry::<T>()
-                        .or_insert(Arc::new(init(&injector))),
+                        .or_insert_with(|| Arc::new(init(&injector))),
                 )
             })
             .upgrade()

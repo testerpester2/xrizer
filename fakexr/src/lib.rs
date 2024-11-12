@@ -1008,6 +1008,16 @@ extern "system" fn get_action_state_boolean(
     info: *const xr::ActionStateGetInfo,
     state: *mut xr::ActionStateBoolean,
 ) -> xr::Result {
+    unsafe {
+        state.write(xr::ActionStateBoolean {
+            ty: xr::ActionStateBoolean::TYPE,
+            next: std::ptr::null_mut(),
+            current_state: false.into(),
+            changed_since_last_sync: false.into(),
+            last_change_time: xr::Time::from_nanos(0),
+            is_active: false.into(),
+        });
+    }
     let session = get_handle!(session);
     let Some((set, action)) = get_action_if_attached(&session, info) else {
         return xr::Result::ERROR_ACTIONSET_NOT_ATTACHED;
@@ -1033,6 +1043,16 @@ extern "system" fn get_action_state_float(
     info: *const xr::ActionStateGetInfo,
     state: *mut xr::ActionStateFloat,
 ) -> xr::Result {
+    unsafe {
+        state.write(xr::ActionStateFloat {
+            ty: xr::ActionStateFloat::TYPE,
+            next: std::ptr::null_mut(),
+            current_state: 0.0,
+            changed_since_last_sync: false.into(),
+            last_change_time: xr::Time::from_nanos(0),
+            is_active: false.into(),
+        });
+    }
     let session = get_handle!(session);
     let Some((set, action)) = get_action_if_attached(&session, info) else {
         return xr::Result::ERROR_ACTIONSET_NOT_ATTACHED;
@@ -1057,6 +1077,16 @@ extern "system" fn get_action_state_vector2f(
     info: *const xr::ActionStateGetInfo,
     state: *mut xr::ActionStateVector2f,
 ) -> xr::Result {
+    unsafe {
+        state.write(xr::ActionStateVector2f {
+            ty: xr::ActionStateFloat::TYPE,
+            next: std::ptr::null_mut(),
+            current_state: xr::Vector2f::default(),
+            changed_since_last_sync: false.into(),
+            last_change_time: xr::Time::from_nanos(0),
+            is_active: false.into(),
+        });
+    }
     let session = get_handle!(session);
     let Some((set, action)) = get_action_if_attached(&session, info) else {
         return xr::Result::ERROR_ACTIONSET_NOT_ATTACHED;
@@ -1119,12 +1149,30 @@ extern "system" fn locate_space(
     assert_ne!(space, *LOCAL);
 
     let space = get_handle!(space);
+    let next = unsafe { *&raw mut (*location).next };
     let mut out_loc = xr::SpaceLocation {
         ty: xr::SpaceLocation::TYPE,
-        next: std::ptr::null_mut(),
+        next,
         location_flags: xr::SpaceLocationFlags::EMPTY,
         pose: xr::Posef::IDENTITY,
     };
+
+    if !next.is_null() {
+        let header = next as *mut xr::BaseOutStructure;
+        unsafe {
+            if *&raw mut (*header).ty == xr::SpaceVelocity::TYPE {
+                let velo = next as *mut xr::SpaceVelocity;
+                velo.write(xr::SpaceVelocity {
+                    ty: xr::SpaceVelocity::TYPE,
+                    next: *&raw mut (*velo).next,
+                    velocity_flags: xr::SpaceVelocityFlags::EMPTY,
+                    linear_velocity: Default::default(),
+                    angular_velocity: Default::default(),
+                });
+                out_loc.next = velo as _;
+            }
+        }
+    }
     if base_space == *LOCAL {
         match space.get_pose_relative_to_local() {
             Ok(loc) => {
