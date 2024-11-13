@@ -130,6 +130,6 @@ impl vr::IVRRenderModels006_Interface for RenderModels {
         _: *const std::os::raw::c_char,
         _: *mut *mut vr::RenderModel_t,
     ) -> vr::EVRRenderModelError {
-        vr::EVRRenderModelError::VRRenderModelError_NotSupported
+        vr::EVRRenderModelError::NotSupported
     }
 }

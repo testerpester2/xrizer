@@ -178,7 +178,7 @@ impl BoolActionData {
                 // If this action isn't bound in the current interaction profile,
                 // is_active will be false - in this case, it's probably a joystick touch dpad, in
                 // which case we still want to read the current state.
-                a.state(&session, xr::Path::NULL)
+                a.state(session, xr::Path::NULL)
                     .map(|s| !s.is_active || s.current_state)
             })
             .unwrap_or(Ok(true))?;
@@ -231,7 +231,7 @@ macro_rules! get_action_from_handle {
     ($self:expr, $handle:expr, $session_data:ident, $action:ident) => {
         let $session_data = $self.openxr.session_data.get();
         let Some(loaded) = $session_data.input_data.get_loaded_actions() else {
-            return vr::EVRInputError::VRInputError_InvalidHandle;
+            return vr::EVRInputError::InvalidHandle;
         };
 
         let $action = match loaded.try_get_action($handle) {
@@ -249,7 +249,7 @@ macro_rules! get_subaction_path {
                 unsafe {
                     $data.write(Default::default());
                 }
-                return vr::EVRInputError::VRInputError_None;
+                return vr::EVRInputError::None;
             }
         }
     };
@@ -268,7 +268,7 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
         _: u32,
     ) -> vr::EVRInputError {
         crate::warn_unimplemented!("GetBindingVariant");
-        vr::EVRInputError::VRInputError_None
+        vr::EVRInputError::None
     }
     fn OpenBindingUI(
         &self,
@@ -321,7 +321,7 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
         if !returned_binding_info_count.is_null() {
             unsafe { *returned_binding_info_count = 0 };
         }
-        vr::EVRInputError::VRInputError_None
+        vr::EVRInputError::None
     }
     fn GetOriginTrackedDeviceInfo(
         &self,
@@ -337,7 +337,7 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
         let key = InputSourceKey::from(KeyData::from_ffi(handle));
         let map = self.input_source_map.read().unwrap();
         if !map.contains_key(key) {
-            return vr::EVRInputError::VRInputError_InvalidHandle;
+            return vr::EVRInputError::InvalidHandle;
         }
 
         // Superhot needs this device index to render controllers.
@@ -348,7 +348,7 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
                 unsafe {
                     info.write(Default::default());
                 }
-                return vr::EVRInputError::VRInputError_None;
+                return vr::EVRInputError::None;
             }
         };
 
@@ -359,7 +359,7 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
                 rchRenderModelComponentName: [0; 128],
             };
         }
-        vr::EVRInputError::VRInputError_None
+        vr::EVRInputError::None
     }
     fn GetOriginLocalizedName(
         &self,
@@ -369,7 +369,7 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
         _: i32,
     ) -> vr::EVRInputError {
         crate::warn_unimplemented!("GetOriginLocalizedName");
-        vr::EVRInputError::VRInputError_None
+        vr::EVRInputError::None
     }
     fn GetActionOrigins(
         &self,
@@ -379,7 +379,7 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
         _: u32,
     ) -> vr::EVRInputError {
         crate::warn_unimplemented!("GetActionOrigins");
-        vr::EVRInputError::VRInputError_None
+        vr::EVRInputError::None
     }
     fn TriggerHapticVibrationAction(
         &self,
@@ -392,11 +392,11 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
     ) -> vr::EVRInputError {
         get_action_from_handle!(self, action, session_data, action);
         let Some(subaction_path) = self.subaction_path_from_handle(restrict_to_device) else {
-            return vr::EVRInputError::VRInputError_None;
+            return vr::EVRInputError::None;
         };
 
         let ActionData::Haptic(action) = action else {
-            return vr::EVRInputError::VRInputError_WrongType;
+            return vr::EVRInputError::WrongType;
         };
 
         if start_seconds_from_now > 0.0 {
@@ -414,7 +414,7 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
             )
             .unwrap();
 
-        vr::EVRInputError::VRInputError_None
+        vr::EVRInputError::None
     }
     fn DecompressSkeletalBoneData(
         &self,
@@ -449,7 +449,7 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
                 flFingerCurl: [0.0; 5],
             })
         }
-        vr::EVRInputError::VRInputError_None
+        vr::EVRInputError::None
     }
     fn GetSkeletalBoneData(
         &self,
@@ -468,7 +468,7 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
 
         get_action_from_handle!(self, handle, session_data, action);
         let ActionData::Skeleton { hand, hand_tracker } = action else {
-            return vr::EVRInputError::VRInputError_WrongType;
+            return vr::EVRInputError::WrongType;
         };
         let hand_tracker = hand_tracker
             .as_ref()
@@ -479,8 +479,8 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
             Hand::Left => &legacy.left_spaces,
             Hand::Right => &legacy.right_spaces,
         }
-        .try_get_or_init_raw(&session_data, &legacy, self.openxr.display_time.get()) else {
-            return vr::EVRInputError::VRInputError_None;
+        .try_get_or_init_raw(&session_data, legacy, self.openxr.display_time.get()) else {
+            return vr::EVRInputError::None;
         };
 
         let Some(joints) = raw
@@ -488,7 +488,7 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
             .unwrap()
         else {
             warn!("no joints!");
-            return vr::EVRInputError::VRInputError_None;
+            return vr::EVRInputError::None;
         };
 
         let mut joints: Box<[_]> = joints
@@ -577,7 +577,7 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
             0.0,
         ));
 
-        if transform_space == vr::EVRSkeletalTransformSpace::VRSkeletalTransformSpace_Parent {
+        if transform_space == vr::EVRSkeletalTransformSpace::Parent {
             // OpenXR reports all our bones in "model" space (basically), so we need to
             // convert everything into parent space.
             // For each finger, the metacarpal is a child of the wrist, and then each consecutive
@@ -624,7 +624,7 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
             xr_joint_to_vr_bone(&joints[joint], &mut transforms[bone as usize])
         }
 
-        vr::EVRInputError::VRInputError_None
+        vr::EVRInputError::None
     }
     fn GetSkeletalTrackingLevel(
         &self,
@@ -632,9 +632,9 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
         level: *mut vr::EVRSkeletalTrackingLevel,
     ) -> vr::EVRInputError {
         unsafe {
-            *level = vr::EVRSkeletalTrackingLevel::VRSkeletalTracking_Partial;
+            *level = vr::EVRSkeletalTrackingLevel::Partial;
         }
-        vr::EVRInputError::VRInputError_None
+        vr::EVRInputError::None
     }
     fn GetSkeletalReferenceTransforms(
         &self,
@@ -645,7 +645,7 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
         _: u32,
     ) -> vr::EVRInputError {
         crate::warn_unimplemented!("GetSkeletalReferenceTransforms");
-        vr::EVRInputError::VRInputError_None
+        vr::EVRInputError::None
     }
     fn GetBoneName(
         &self,
@@ -667,22 +667,22 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
     fn GetBoneCount(&self, handle: vr::VRActionHandle_t, count: *mut u32) -> vr::EVRInputError {
         get_action_from_handle!(self, handle, session_data, action);
         if !matches!(action, ActionData::Skeleton { .. }) {
-            return vr::EVRInputError::VRInputError_WrongType;
+            return vr::EVRInputError::WrongType;
         }
 
         let Some(count) = (unsafe { count.as_mut() }) else {
-            return vr::EVRInputError::VRInputError_InvalidParam;
+            return vr::EVRInputError::InvalidParam;
         };
         *count = HandSkeletonBone::Count as u32;
 
-        vr::EVRInputError::VRInputError_None
+        vr::EVRInputError::None
     }
     fn SetDominantHand(&self, _: vr::ETrackedControllerRole) -> vr::EVRInputError {
         todo!()
     }
     fn GetDominantHand(&self, _: *mut vr::ETrackedControllerRole) -> vr::EVRInputError {
         crate::warn_unimplemented!("GetDominantHand");
-        vr::EVRInputError::VRInputError_None
+        vr::EVRInputError::None
     }
     fn GetSkeletalActionData(
         &self,
@@ -697,14 +697,14 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
 
         let data = self.openxr.session_data.get();
         let Some(loaded) = data.input_data.get_loaded_actions() else {
-            return vr::EVRInputError::VRInputError_InvalidHandle;
+            return vr::EVRInputError::InvalidHandle;
         };
         let origin = match loaded.try_get_action(action) {
             Ok(ActionData::Skeleton { hand, .. }) => match hand {
                 Hand::Left => self.left_hand_key.data().as_ffi(),
                 Hand::Right => self.right_hand_key.data().as_ffi(),
             },
-            Ok(_) => return vr::EVRInputError::VRInputError_WrongType,
+            Ok(_) => return vr::EVRInputError::WrongType,
             Err(e) => return e,
         };
         let legacy = data.input_data.legacy_actions.get().unwrap();
@@ -717,7 +717,7 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
             );
             std::ptr::addr_of_mut!((*action_data).activeOrigin).write(origin);
         }
-        vr::EVRInputError::VRInputError_None
+        vr::EVRInputError::None
     }
     fn GetPoseActionDataForNextFrame(
         &self,
@@ -740,7 +740,7 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
 
         let data = self.openxr.session_data.get();
         let Some(loaded) = data.input_data.get_loaded_actions() else {
-            return vr::EVRInputError::VRInputError_InvalidHandle;
+            return vr::EVRInputError::InvalidHandle;
         };
 
         macro_rules! no_data {
@@ -748,7 +748,7 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
                 unsafe {
                     action_data.write(Default::default());
                 }
-                return vr::EVRInputError::VRInputError_None;
+                return vr::EVRInputError::None;
             }};
         }
         let subaction_path = match self.subaction_path_from_handle(restrict_to_device) {
@@ -794,11 +794,11 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
             }
             Ok(ActionData::Skeleton { hand, .. }) => {
                 if subaction_path != xr::Path::NULL {
-                    return vr::EVRInputError::VRInputError_InvalidDevice;
+                    return vr::EVRInputError::InvalidDevice;
                 }
                 (0, *hand)
             }
-            Ok(_) => return vr::EVRInputError::VRInputError_WrongType,
+            Ok(_) => return vr::EVRInputError::WrongType,
             Err(e) => return e,
         };
 
@@ -812,7 +812,7 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
             })
         }
 
-        vr::EVRInputError::VRInputError_None
+        vr::EVRInputError::None
     }
 
     fn GetPoseActionDataRelativeToNow(
@@ -879,7 +879,7 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
                 last_value.1.store(state.current_state.y);
                 (state, delta)
             }
-            _ => return vr::EVRInputError::VRInputError_WrongType,
+            _ => return vr::EVRInputError::WrongType,
         };
         unsafe {
             action_data.write(vr::InputAnalogActionData_t {
@@ -893,7 +893,7 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
             });
         }
 
-        vr::EVRInputError::VRInputError_None
+        vr::EVRInputError::None
     }
 
     fn GetDigitalActionData(
@@ -910,7 +910,7 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
 
         let data = self.openxr.session_data.get();
         let Some(loaded) = data.input_data.get_loaded_actions() else {
-            return vr::EVRInputError::VRInputError_InvalidHandle;
+            return vr::EVRInputError::InvalidHandle;
         };
 
         let subaction_path = match self.subaction_path_from_handle(restrict_to_device) {
@@ -919,14 +919,14 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
                 unsafe {
                     action_data.write(Default::default());
                 }
-                return vr::EVRInputError::VRInputError_None;
+                return vr::EVRInputError::None;
             }
         };
 
         let action = match loaded.try_get_action(action) {
             Ok(action) => {
                 let ActionData::Bool(action) = &action else {
-                    return vr::EVRInputError::VRInputError_WrongType;
+                    return vr::EVRInputError::WrongType;
                 };
                 action
             }
@@ -944,7 +944,7 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
             });
         }
 
-        vr::EVRInputError::VRInputError_None
+        vr::EVRInputError::None
     }
 
     fn UpdateActionState(
@@ -959,7 +959,7 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
         );
         // alyx
         if active_set_count == 0 {
-            return vr::EVRInputError::VRInputError_NoActiveActionSet;
+            return vr::EVRInputError::NoActiveActionSet;
         }
 
         let active_sets =
@@ -974,7 +974,7 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
 
         let data = self.openxr.session_data.get();
         let Some(actions) = data.input_data.get_loaded_actions() else {
-            return vr::EVRInputError::VRInputError_InvalidParam;
+            return vr::EVRInputError::InvalidParam;
         };
 
         let mut sync_sets = Vec::with_capacity(active_sets.len() + 1);
@@ -984,7 +984,7 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
             let name = m.get(key);
             let Some(set) = actions.sets.get(key) else {
                 debug!("Application passed invalid action set key: {key:?} ({name:?})");
-                return vr::EVRInputError::VRInputError_InvalidHandle;
+                return vr::EVRInputError::InvalidHandle;
             };
             debug!("Activating set {}", name.unwrap());
             sync_sets.push(set.into());
@@ -996,7 +996,7 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
 
         data.session.sync_actions(&sync_sets).unwrap();
 
-        vr::EVRInputError::VRInputError_None
+        vr::EVRInputError::None
     }
 
     fn GetInputSourceHandle(
@@ -1021,9 +1021,9 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
         if let Some(handle) = unsafe { handle.as_mut() } {
             debug!("requested handle for path {path:?}: {ret}");
             *handle = ret;
-            vr::EVRInputError::VRInputError_None
+            vr::EVRInputError::None
         } else {
-            vr::EVRInputError::VRInputError_InvalidParam
+            vr::EVRInputError::InvalidParam
         }
     }
 
@@ -1041,16 +1041,16 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
             None => {
                 drop(guard);
                 let mut guard = self.action_map.write().unwrap();
-                let key = guard.insert(Action { path: name.into() });
+                let key = guard.insert(Action { path: name });
                 key.data().as_ffi()
             }
         };
 
         if let Some(handle) = unsafe { handle.as_mut() } {
             *handle = val;
-            vr::EVRInputError::VRInputError_None
+            vr::EVRInputError::None
         } else {
-            vr::EVRInputError::VRInputError_InvalidParam
+            vr::EVRInputError::InvalidParam
         }
     }
 
@@ -1068,16 +1068,16 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
             None => {
                 drop(guard);
                 let mut guard = self.set_map.write().unwrap();
-                let key = guard.insert(name.into());
+                let key = guard.insert(name);
                 key.data().as_ffi()
             }
         };
 
         if let Some(handle) = unsafe { handle.as_mut() } {
             *handle = val;
-            vr::EVRInputError::VRInputError_None
+            vr::EVRInputError::None
         } else {
-            vr::EVRInputError::VRInputError_InvalidParam
+            vr::EVRInputError::InvalidParam
         }
     }
 
@@ -1093,8 +1093,8 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
             self.openxr.restart_session();
             data = self.openxr.session_data.get();
         }
-        match self.load_action_manifest(&*data, path) {
-            Ok(_) => vr::EVRInputError::VRInputError_None,
+        match self.load_action_manifest(&data, path) {
+            Ok(_) => vr::EVRInputError::None,
             Err(e) => e,
         }
     }
@@ -1110,7 +1110,7 @@ impl<C: openxr_data::Compositor> vr::IVRInput005On006 for Input<C> {
         <Self as vr::IVRInput010_Interface>::GetSkeletalSummaryData(
             self,
             action,
-            vr::EVRSummaryType::VRSummaryType_FromAnimation,
+            vr::EVRSummaryType::FromAnimation,
             summary_data,
         )
     }
@@ -1251,14 +1251,8 @@ impl<C: openxr_data::Compositor> Input<C> {
             state.ulButtonPressed |= button_mask_from_id(id) & val;
         };
 
-        read_button(
-            vr::EVRButtonId::k_EButton_SteamVR_Trigger,
-            &actions.trigger_click,
-        );
-        read_button(
-            vr::EVRButtonId::k_EButton_ApplicationMenu,
-            &actions.app_menu,
-        );
+        read_button(vr::EVRButtonId::SteamVR_Trigger, &actions.trigger_click);
+        read_button(vr::EVRButtonId::ApplicationMenu, &actions.app_menu);
 
         let t = actions.trigger.state(&data.session, hand_path).unwrap();
         state.rAxis[1] = vr::VRControllerAxis_t {
@@ -1325,8 +1319,6 @@ impl<C: openxr_data::Compositor> Input<C> {
         hand: Hand,
         property: vr::ETrackedDeviceProperty,
     ) -> Option<&'static CStr> {
-        use vr::ETrackedDeviceProperty::*;
-
         struct ProfileData {
             controller_type: &'static CStr,
             model_number: &'static CStr,
@@ -1361,12 +1353,17 @@ impl<C: openxr_data::Compositor> Input<C> {
 
         match property {
             // Audica likes to apply controller specific tweaks via this property
-            Prop_ControllerType_String => get_profile_data().map(|data| data.controller_type),
+            vr::ETrackedDeviceProperty::ControllerType_String => {
+                get_profile_data().map(|data| data.controller_type)
+            }
             // I Expect You To Die 3 identifies controllers with this property -
             // why it couldn't just use ControllerType instead is beyond me...
-            Prop_ModelNumber_String => get_profile_data().map(|data| data.model_number),
+            vr::ETrackedDeviceProperty::ModelNumber_String => {
+                get_profile_data().map(|data| data.model_number)
+            }
             // Required for controllers to be acknowledged in I Expect You To Die 3
-            Prop_SerialNumber_String | Prop_ManufacturerName_String => Some(c"<unknown>"),
+            vr::ETrackedDeviceProperty::SerialNumber_String
+            | vr::ETrackedDeviceProperty::ManufacturerName_String => Some(c"<unknown>"),
             _ => None,
         }
     }
@@ -1423,7 +1420,7 @@ impl LoadedActions {
         let key = ActionKey::from(KeyData::from_ffi(handle));
         self.actions
             .get(key)
-            .ok_or(vr::EVRInputError::VRInputError_InvalidHandle)
+            .ok_or(vr::EVRInputError::InvalidHandle)
     }
 }
 

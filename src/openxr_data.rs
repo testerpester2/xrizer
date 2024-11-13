@@ -49,6 +49,7 @@ impl<C: Compositor> Drop for OpenXrData<C> {
 
 #[derive(Debug)]
 #[allow(dead_code)] // Results aren't used, but they're printed
+#[allow(clippy::enum_variant_names)]
 pub enum InitError {
     InstanceCreationFailed(xr::sys::Result),
     SystemCreationFailed(xr::sys::Result),
@@ -86,17 +87,17 @@ impl<C: Compositor> OpenXrData<C> {
                 &exts,
                 &[],
             )
-            .map_err(|e| InitError::InstanceCreationFailed(e))?;
+            .map_err(InitError::InstanceCreationFailed)?;
 
         let system_id = instance
             .system(xr::FormFactor::HEAD_MOUNTED_DISPLAY)
-            .map_err(|e| InitError::SystemCreationFailed(e))?;
+            .map_err(InitError::SystemCreationFailed)?;
 
         let session_data = SessionReadGuard(RwLock::new(ManuallyDrop::new(
             SessionData::new(
                 &instance,
                 system_id,
-                vr::ETrackingUniverseOrigin::TrackingUniverseStanding,
+                vr::ETrackingUniverseOrigin::Standing,
                 None,
             )?
             .0,
@@ -238,13 +239,13 @@ impl<C: Compositor> OpenXrData<C> {
         };
 
         match origin {
-            vr::ETrackingUniverseOrigin::TrackingUniverseRawAndUncalibrated => unimplemented!(),
-            vr::ETrackingUniverseOrigin::TrackingUniverseStanding => reset_space(
+            vr::ETrackingUniverseOrigin::RawAndUncalibrated => unimplemented!(),
+            vr::ETrackingUniverseOrigin::Standing => reset_space(
                 stage_space_reference,
                 stage_space_adjusted,
                 xr::ReferenceSpaceType::STAGE,
             ),
-            vr::ETrackingUniverseOrigin::TrackingUniverseSeated => reset_space(
+            vr::ETrackingUniverseOrigin::Seated => reset_space(
                 local_space_reference,
                 local_space_adjusted,
                 xr::ReferenceSpaceType::LOCAL,
@@ -311,13 +312,14 @@ pub struct SessionData {
     /// that will be replaced with a real one after the application calls IVRSystem::Submit.
     /// When we're using the real session, this will be None.
     /// Note that it also important that this comes after all members which internally use a xr::Session
-    /// - structs are dropped in declaration order, and if we drop our temporary Vulkan data
+    /// \- structs are dropped in declaration order, and if we drop our temporary Vulkan data
     /// before the session, the runtime will likely be very unhappy.
     temp_vulkan: Option<VulkanData>,
 }
 
 #[derive(Debug)]
 #[allow(dead_code)] // Results aren't used, but they're printed
+#[allow(clippy::enum_variant_names)]
 pub enum SessionCreationError {
     SessionCreationFailed(xr::sys::Result),
     PollEventFailed(xr::sys::Result),
@@ -344,14 +346,14 @@ impl SessionData {
             assert_eq!(pd, info.physical_device);
             (None, info)
         } else {
-            let vk = VulkanData::new_temporary(&instance, system_id);
+            let vk = VulkanData::new_temporary(instance, system_id);
             info = vk.as_session_create_info();
             (Some(vk), &info)
         };
 
         let (session, waiter, stream) =
-            unsafe { instance.create_session::<xr::vulkan::Vulkan>(system_id, &info) }
-                .map_err(|e| SessionCreationError::SessionCreationFailed(e))?;
+            unsafe { instance.create_session::<xr::vulkan::Vulkan>(system_id, info) }
+                .map_err(SessionCreationError::SessionCreationFailed)?;
         info!("New session created!");
 
         let view_space = session
@@ -372,7 +374,7 @@ impl SessionData {
         loop {
             if let Some(xr::Event::SessionStateChanged(state)) = instance
                 .poll_event(&mut buf)
-                .map_err(|e| SessionCreationError::PollEventFailed(e))?
+                .map_err(SessionCreationError::PollEventFailed)?
             {
                 if state.state() == xr::SessionState::READY {
                     break;
@@ -386,7 +388,7 @@ impl SessionData {
         );
         session
             .begin(xr::ViewConfigurationType::PRIMARY_STEREO)
-            .map_err(|e| SessionCreationError::BeginSessionFailed(e))?;
+            .map_err(SessionCreationError::BeginSessionFailed)?;
         info!("Began OpenXR session.");
 
         Ok((
@@ -414,9 +416,9 @@ impl SessionData {
 
     pub fn get_space_for_origin(&self, origin: vr::ETrackingUniverseOrigin) -> &xr::Space {
         match origin {
-            vr::ETrackingUniverseOrigin::TrackingUniverseSeated => &self.local_space_adjusted,
-            vr::ETrackingUniverseOrigin::TrackingUniverseStanding => &self.stage_space_adjusted,
-            vr::ETrackingUniverseOrigin::TrackingUniverseRawAndUncalibrated => unreachable!(),
+            vr::ETrackingUniverseOrigin::Seated => &self.local_space_adjusted,
+            vr::ETrackingUniverseOrigin::Standing => &self.stage_space_adjusted,
+            vr::ETrackingUniverseOrigin::RawAndUncalibrated => unreachable!(),
         }
     }
 

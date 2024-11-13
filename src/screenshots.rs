@@ -54,7 +54,7 @@ impl vr::IVRScreenshots001_Interface for Screenshots {
         _: *const vr::EVRScreenshotType,
         _: std::os::raw::c_int,
     ) -> vr::EVRScreenshotError {
-        vr::EVRScreenshotError::VRScreenshotError_None
+        vr::EVRScreenshotError::None
     }
     fn RequestScreenshot(
         &self,

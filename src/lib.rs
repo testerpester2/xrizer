@@ -23,18 +23,25 @@ use bindings::vr;
 
 impl Default for vr::ETrackingResult {
     fn default() -> Self {
-        Self::TrackingResult_Uninitialized
+        Self::Uninitialized
     }
 }
 
-/// Types that are interfaces. Should only be implemented by generated code.
+/// Types that are interfaces.
+/// # Safety
+///
+/// Should only be implemented by generated code.
 unsafe trait OpenVrInterface: 'static {
     type Vtable: Sync;
 }
 
-/// Trait for inheriting from an interface. Implemented by generated code.
+/// Trait for inheriting from an interface.
 /// The thread safety/usage patterns of OpenVR interfaces is not clear, so we err on the safe side and require
 /// inheritors to be Sync.
+///
+/// # Safety
+///
+/// should not be implemented by hand
 unsafe trait Inherits<T: OpenVrInterface>: Sync
 where
     Self: Sized,
@@ -50,10 +57,11 @@ struct VtableWrapper<T: OpenVrInterface, Wrapped> {
     wrapped: Weak<Wrapped>,
 }
 
+type InterfaceGetter<T> = Box<dyn FnOnce(&Arc<T>) -> *mut c_void>;
 trait InterfaceImpl: Sync + Send + 'static {
     fn supported_versions() -> &'static [&'static CStr];
     /// Gets a specific interface version
-    fn get_version(version: &CStr) -> Option<Box<dyn FnOnce(&Arc<Self>) -> *mut c_void>>;
+    fn get_version(version: &CStr) -> Option<InterfaceGetter<Self>>;
 }
 
 macro_rules! warn_unimplemented {
@@ -87,7 +95,7 @@ fn init_logging() {
 
             impl std::io::Write for ComboWriter {
                 fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-                    self.0.write(buf)?;
+                    let _ = self.0.write(buf)?;
                     self.1.write(buf)
                 }
 
@@ -143,8 +151,11 @@ fn init_logging() {
     log::info!("Initializing XRizer");
 }
 
+/// # Safety
+///
+/// interface_name must be valid
 #[no_mangle]
-pub extern "C" fn VRClientCoreFactory(
+pub unsafe extern "C" fn VRClientCoreFactory(
     interface_name: *const c_char,
     return_code: *mut i32,
 ) -> *mut c_void {

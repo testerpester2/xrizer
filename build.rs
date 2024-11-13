@@ -23,7 +23,7 @@ macro_rules! dbg {
 // that have a rustified enum member.
 // We will instead manually place a derive(Default) on these.
 // https://github.com/rust-lang/rust-bindgen/issues/2974
-static MANUAL_DERIVE_DEFAULT: &[&'static str] = &[
+static MANUAL_DERIVE_DEFAULT: &[&str] = &[
     // Have a vr::ETrackingResult member
     "TrackedDevicePose_t",
     "InputPoseActionData_t",
@@ -40,6 +40,34 @@ impl ParseCallbacks for Callbacks {
             vec!["Default".to_string()]
         } else {
             Vec::new()
+        }
+    }
+
+    // All of the enums have an annoying prefix that is just the name
+    // Since Rust enums are properly scoped, we can just strip this prefix
+    fn enum_variant_name(
+        &self,
+        enum_name: Option<&str>,
+        original_variant_name: &str,
+        _variant_value: bindgen::callbacks::EnumVariantValue,
+    ) -> Option<String> {
+        let enum_name = enum_name?;
+        match original_variant_name.split_once('_') {
+            Some(("k", name)) => name.split_once('_').map(|s| s.1.to_string()).or_else(|| {
+                if enum_name == "EHiddenAreaMesh" {
+                    Some(name.split_once('_')?.1.to_string())
+                } else {
+                    name.strip_prefix(enum_name).map(str::to_string)
+                }
+            }),
+            Some((_, name)) => Some(name.to_string()),
+            None => (enum_name == "ETrackingUniverseOrigin")
+                .then(|| {
+                    original_variant_name
+                        .strip_prefix("TrackingUniverse")
+                        .map(str::to_string)
+                })
+                .flatten(),
         }
     }
 }
@@ -82,7 +110,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Interfaces to generate bindings for.
-    const INTERFACES: &'static [&'static str] = &[
+    const INTERFACES: &[&str] = &[
         "IVRSystem",
         "IVRCompositor",
         "IVROverlay",
@@ -97,12 +125,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     for interface in INTERFACES {
         builder = builder
-            .allowlist_type(&format!("vr.*::{interface}"))
-            .allowlist_item(&format!("vr.*::{interface}_Version"));
+            .allowlist_type(format!("vr.*::{interface}"))
+            .allowlist_item(format!("vr.*::{interface}_Version"));
     }
 
     for s in MANUAL_DERIVE_DEFAULT {
-        builder = builder.no_default(&format!("vr.*::{s}"));
+        builder = builder.no_default(format!("vr.*::{s}"));
     }
     let bindings = builder
         .clang_args([
@@ -214,7 +242,7 @@ fn verify_fields_are_identical<'a, T>(
         ) -> &'a syn::TypePath {
             fn extract_array_type(ty: &syn::Type) -> &syn::Type {
                 match ty {
-                    syn::Type::Array(ty) => extract_array_type(&*ty.elem),
+                    syn::Type::Array(ty) => extract_array_type(&ty.elem),
                     other => other,
                 }
             }
@@ -238,8 +266,8 @@ fn verify_fields_are_identical<'a, T>(
             }
         }
 
-        let existing_type = extract_type(ident, &existing_field, a_mod);
-        let new_type = extract_type(ident, &new_field, b_mod);
+        let existing_type = extract_type(ident, existing_field, a_mod);
+        let new_type = extract_type(ident, new_field, b_mod);
 
         assert_eq!(
             existing_type.path.segments.last(),
@@ -292,9 +320,9 @@ fn unversion_path(path: &mut syn::Path) {
 fn unversion_type(ty: &mut syn::Type) -> Result<(), String> {
     fn extract_array_or_ptr_type(array: &mut syn::Type) -> &mut syn::Type {
         match array {
-            syn::Type::Array(a) => extract_array_or_ptr_type(&mut *a.elem),
-            syn::Type::Ptr(p) => extract_array_or_ptr_type(&mut *p.elem),
-            syn::Type::Reference(r) => extract_array_or_ptr_type(&mut *r.elem),
+            syn::Type::Array(a) => extract_array_or_ptr_type(&mut a.elem),
+            syn::Type::Ptr(p) => extract_array_or_ptr_type(&mut p.elem),
+            syn::Type::Reference(r) => extract_array_or_ptr_type(&mut r.elem),
             other => other,
         }
     }
@@ -314,10 +342,7 @@ fn unversion_type(ty: &mut syn::Type) -> Result<(), String> {
             Ok(())
         }
         syn::Type::Array(_) | syn::Type::Ptr(_) | syn::Type::Reference(_) => unreachable!(),
-        other => Err(format!(
-            "unexpected type: {}",
-            other.to_token_stream().to_string()
-        )),
+        other => Err(format!("unexpected type: {}", other.to_token_stream())),
     }
 }
 
@@ -331,7 +356,7 @@ where
 }
 
 fn unversion_impl(impl_item: &mut syn::ItemImpl) {
-    unversion_type(&mut *impl_item.self_ty).unwrap();
+    unversion_type(&mut impl_item.self_ty).unwrap();
     for item in impl_item.items.iter_mut() {
         match item {
             syn::ImplItem::Fn(item) => {
@@ -547,7 +572,7 @@ fn versionify_interface(
     } else {
         versioned
             .entry(interface.to_string())
-            .or_insert(Vec::new())
+            .or_default()
             .push(ret);
     }
 }
@@ -574,7 +599,7 @@ fn process_vr_namespace_content(
                         impl_type: block_target,
                         vr_mod: vr_mod.ident.to_string(),
                     })
-                    .or_insert(Vec::new());
+                    .or_default();
 
                 if let Some((_, path, _)) = item.trait_.as_mut() {
                     // unversion the generic parameters on the trait
@@ -592,7 +617,7 @@ fn process_vr_namespace_content(
                     }
                     items.push(ImplItem::TraitImpl(item));
                 } else {
-                    items.extend(item.items.into_iter().map(|item| ImplItem::Free(item)));
+                    items.extend(item.items.into_iter().map(ImplItem::Free));
                 }
             }
             syn::Item::Enum(item) => {
@@ -685,7 +710,7 @@ fn process_and_versionify_types(tokens: TokenStream) -> String {
                     ..
                 } = &item
                 {
-                    outer_attrs.extend_from_slice(&attrs);
+                    outer_attrs.extend_from_slice(attrs);
                     if ident == "self" {
                         continue;
                     }
@@ -790,6 +815,10 @@ fn process_and_versionify_types(tokens: TokenStream) -> String {
         #(#attrs)*
         #(#outer_attrs)*
         #[allow(dead_code)]
+        #[allow(clippy::too_many_arguments)]
+        #[allow(clippy::tabs_in_doc_comments)]
+        #[allow(clippy::doc_lazy_continuation)]
+        #[allow(clippy::upper_case_acronyms)]
         mod bindings {
             #(#outer_items)*
             pub mod vr {
@@ -848,6 +877,7 @@ fn generate_vtable_trait(
     let mut fntable_init = Vec::new();
 
     let ty_to_fnarg = |ident: &syn::Ident, ty: &syn::Type| -> syn::FnArg {
+        #[allow(clippy::useless_conversion, reason = "false positive")]
         syn::PatType::from(parse_quote!( #ident: #ty )).into()
     };
 
@@ -864,7 +894,7 @@ fn generate_vtable_trait(
             panic!(
                 "vtable {} has non BareFn field: {}",
                 vtable.ident,
-                field.to_token_stream().to_string()
+                field.to_token_stream()
             );
         };
 
@@ -874,7 +904,7 @@ fn generate_vtable_trait(
         let fn_name = fn_name.strip_prefix(&struct_prefix).unwrap_or_else(|| {
             panic!("function {fn_name} missing struct prefix ({struct_prefix})")
         });
-        let fn_name = syn::Ident::new(&fn_name, field.ident.as_ref().unwrap().span());
+        let fn_name = syn::Ident::new(fn_name, field.ident.as_ref().unwrap().span());
         let fn_output = &f.output;
 
         let fn_args = f
@@ -1015,7 +1045,7 @@ fn generate_vtable_trait(
         let v = &interface_name[interface_version_start_pos..];
         let s = format!("{interface_no_version}_{v}\0");
         proc_macro2::Literal::c_string(unsafe {
-            &std::ffi::CStr::from_bytes_with_nul_unchecked(s.as_bytes())
+            std::ffi::CStr::from_bytes_with_nul_unchecked(s.as_bytes())
         })
     };
     GeneratedInterfaceData {

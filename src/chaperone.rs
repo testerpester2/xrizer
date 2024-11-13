@@ -60,6 +60,6 @@ impl vr::IVRChaperone004_Interface for Chaperone {
         true
     }
     fn GetCalibrationState(&self) -> vr::ChaperoneCalibrationState {
-        vr::ChaperoneCalibrationState::ChaperoneCalibrationState_OK
+        vr::ChaperoneCalibrationState::OK
     }
 }

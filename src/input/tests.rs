@@ -9,7 +9,6 @@ use std::collections::HashSet;
 use std::f32::consts::FRAC_PI_4;
 use std::ffi::CStr;
 use std::sync::Arc;
-use vr::EVRInputError::*;
 
 static ACTIONS_JSONS_DIR: &'static CStr = unsafe {
     CStr::from_bytes_with_nul_unchecked(
@@ -102,7 +101,7 @@ impl Fixture {
         let path = &[ACTIONS_JSONS_DIR.to_bytes(), file.to_bytes_with_nul()].concat();
         assert_eq!(
             self.input.SetActionManifestPath(path.as_ptr() as _),
-            VRInputError_None
+            vr::EVRInputError::None
         );
     }
 
@@ -159,7 +158,7 @@ impl Fixture {
         let mut handle = 0;
         assert_eq!(
             self.input.GetActionHandle(name.as_ptr(), &mut handle),
-            VRInputError_None
+            vr::EVRInputError::None
         );
         assert_ne!(handle, 0);
         handle
@@ -169,7 +168,7 @@ impl Fixture {
         let mut handle = 0;
         assert_eq!(
             self.input.GetActionSetHandle(name.as_ptr(), &mut handle),
-            VRInputError_None
+            vr::EVRInputError::None
         );
         assert_ne!(handle, 0);
         handle
@@ -182,7 +181,7 @@ impl Fixture {
                 std::mem::size_of::<vr::VRActiveActionSet_t>() as u32,
                 1
             ),
-            VRInputError_None
+            vr::EVRInputError::None
         );
     }
 
@@ -212,7 +211,7 @@ impl Fixture {
             0,
         );
 
-        if err != VRInputError_None {
+        if err != vr::EVRInputError::None {
             Err(err)
         } else {
             Ok(state)
@@ -317,7 +316,7 @@ fn legacy_input() {
     assert!(got_input);
     assert_ne!({ state.unPacketNum }, last_packet_num);
     let state = { state.ulButtonPressed };
-    let expected = 1 << vr::EVRButtonId::k_EButton_SteamVR_Trigger as u64;
+    let expected = 1 << vr::EVRButtonId::SteamVR_Trigger as u64;
     assert_eq!(
         state, expected,
         "Trigger should be active (got {state:b}, expected {expected:b})",
@@ -338,7 +337,7 @@ fn unknown_handles() {
             std::mem::size_of::<vr::InputDigitalActionData_t>() as u32,
             0
         ),
-        VRInputError_None
+        vr::EVRInputError::None
     );
 }
 
@@ -576,7 +575,7 @@ fn raw_pose_is_grip_at_aim() {
         assert_eq!(
             f.input
                 .GetInputSourceHandle(c"/user/hand/left".as_ptr(), &mut h),
-            VRInputError_None
+            vr::EVRInputError::None
         );
         h
     };
@@ -615,12 +614,12 @@ fn raw_pose_is_grip_at_aim() {
     assert_eq!(
         f.input.GetPoseActionDataForNextFrame(
             pose_handle,
-            vr::ETrackingUniverseOrigin::TrackingUniverseSeated,
+            vr::ETrackingUniverseOrigin::Seated,
             &mut data,
             std::mem::size_of_val(&data) as u32,
             left_hand,
         ),
-        VRInputError_None
+        vr::EVRInputError::None
     );
 
     assert_eq!(data.bActive, true);
@@ -629,10 +628,7 @@ fn raw_pose_is_grip_at_aim() {
     let pose = data.pose;
     assert_eq!(pose.bDeviceIsConnected, true);
     assert_eq!(pose.bPoseIsValid, true);
-    assert_eq!(
-        pose.eTrackingResult,
-        vr::ETrackingResult::TrackingResult_Running_OK
-    );
+    assert_eq!(pose.eTrackingResult, vr::ETrackingResult::Running_OK);
 
     compare_pose(
         xr::Posef {
@@ -651,7 +647,7 @@ fn raw_pose_waitgetposes_and_skeletal_pose_identical() {
         assert_eq!(
             f.input
                 .GetInputSourceHandle(c"/user/hand/left".as_ptr(), &mut h),
-            VRInputError_None
+            vr::EVRInputError::None
         );
         h
     };
@@ -676,7 +672,7 @@ fn raw_pose_waitgetposes_and_skeletal_pose_identical() {
     fakexr::set_grip(f.raw_session(), fakexr::UserPath::LeftHand, pose);
     fakexr::set_aim(f.raw_session(), fakexr::UserPath::LeftHand, pose);
 
-    let seated_origin = vr::ETrackingUniverseOrigin::TrackingUniverseSeated;
+    let seated_origin = vr::ETrackingUniverseOrigin::Seated;
     let waitgetposes_pose = f
         .input
         .get_controller_pose(super::Hand::Left, Some(seated_origin))
@@ -684,7 +680,7 @@ fn raw_pose_waitgetposes_and_skeletal_pose_identical() {
 
     let mut raw_pose = vr::InputPoseActionData_t {
         pose: vr::TrackedDevicePose_t {
-            eTrackingResult: vr::ETrackingResult::TrackingResult_Running_OutOfRange,
+            eTrackingResult: vr::ETrackingResult::Running_OutOfRange,
             ..Default::default()
         },
         ..Default::default()
@@ -698,7 +694,7 @@ fn raw_pose_waitgetposes_and_skeletal_pose_identical() {
         std::mem::size_of_val(&raw_pose) as u32,
         left_hand,
     );
-    assert_eq!(ret, VRInputError_None);
+    assert_eq!(ret, vr::EVRInputError::None);
     compare_pose(
         hmdmatrix34_to_pose(waitgetposes_pose.mDeviceToAbsoluteTracking),
         hmdmatrix34_to_pose(raw_pose.pose.mDeviceToAbsoluteTracking),
@@ -711,7 +707,7 @@ fn raw_pose_waitgetposes_and_skeletal_pose_identical() {
         std::mem::size_of_val(&skel_pose) as u32,
         0,
     );
-    assert_eq!(ret, VRInputError_None);
+    assert_eq!(ret, vr::EVRInputError::None);
 
     compare_pose(
         hmdmatrix34_to_pose(waitgetposes_pose.mDeviceToAbsoluteTracking),

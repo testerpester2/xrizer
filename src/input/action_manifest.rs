@@ -34,12 +34,12 @@ impl<C: openxr_data::Compositor> Input<C> {
 
         let data = std::fs::read(manifest_path).map_err(|e| {
             error!("Failed to read manifest {}: {e}", manifest_path.display());
-            vr::EVRInputError::VRInputError_InvalidParam
+            vr::EVRInputError::InvalidParam
         })?;
 
         let manifest: ActionManifest = serde_json::from_slice(&data).map_err(|e| {
             error!("Failed to parse action manifest: {e}");
-            vr::EVRInputError::VRInputError_InvalidParam
+            vr::EVRInputError::InvalidParam
         })?;
 
         // TODO: support non english localization?
@@ -234,15 +234,15 @@ fn load_action_sets(
         // OpenXR does not like the "/actions/<set name>" format, so we need to strip the prefix
         let Some(xr_friendly_name) = path.strip_prefix("/actions/") else {
             error!("Action set {path} missing actions prefix.");
-            return Err(vr::EVRInputError::VRInputError_InvalidParam);
+            return Err(vr::EVRInputError::InvalidParam);
         };
 
         trace!("Creating action set {xr_friendly_name} ({path:?}) (localized: {localized})");
         let set = instance
-            .create_action_set(&xr_friendly_name, localized, 0)
+            .create_action_set(xr_friendly_name, localized, 0)
             .map_err(|e| {
                 error!("Failed to create action set: {e}");
-                vr::EVRInputError::VRInputError_InvalidParam
+                vr::EVRInputError::InvalidParam
             })?;
 
         action_sets.insert(path, set);
@@ -484,12 +484,14 @@ enum ActionBinding {
     Grab {
         path: String,
         inputs: GrabInput,
-        #[serde(rename = "parameters")]
-        _parameters: Option<GrabParameters>,
+        #[allow(unused)]
+        parameters: Option<GrabParameters>,
     },
     Scroll {
+        #[allow(unused)]
         path: String,
         inputs: ScrollInput,
+        #[allow(unused)]
         parameters: Option<ScrollParameters>,
     },
     Trackpad(Vector2Mode),
@@ -504,8 +506,8 @@ struct ButtonInput {
 
 #[derive(Deserialize)]
 struct ButtonParameters {
-    #[serde(rename = "force_input")]
-    _force_input: Option<String>,
+    #[allow(unused)]
+    force_input: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -549,7 +551,7 @@ enum DpadSubMode {
 
 fn parse_pct<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u8, D::Error> {
     let val: &str = Deserialize::deserialize(d)?;
-    u8::from_str_radix(val, 10).map_err(|e| {
+    val.parse().map_err(|e| {
         D::Error::invalid_value(Unexpected::Str(val), &format!("a valid u8 ({e})").as_str())
     })
 }
@@ -625,7 +627,9 @@ struct ScrollInput {
 
 #[derive(Deserialize)]
 struct ScrollParameters {
+    #[allow(unused)]
     scroll_mode: Option<String>,
+    #[allow(unused)]
     smooth_scroll_multiplier: Option<String>, // float
 }
 
@@ -671,7 +675,7 @@ macro_rules! for_each_profile {
 pub(super) use for_each_profile;
 
 impl<C: openxr_data::Compositor> Input<C> {
-    fn load_bindings<'a>(
+    fn load_bindings(
         &self,
         parent_path: &Path,
         action_sets: &HashMap<String, xr::ActionSet>,
@@ -752,14 +756,14 @@ impl<C: openxr_data::Compositor> Input<C> {
             f
         }
         let stp = constrain(|s| self.openxr.instance.string_to_path(s).unwrap());
-        let legacy_bindings = P::legacy_bindings(stp, &legacy_actions);
+        let legacy_bindings = P::legacy_bindings(stp, legacy_actions);
         let profile_path = stp(P::PROFILE_PATH);
         let legal_paths = P::legal_paths();
         let translate_map = P::TRANSLATE_MAP;
         let path_translator = |path: &str| {
             let mut translated = path.to_string();
             for PathTranslation { from, to, stop } in translate_map {
-                if translated.find(from).is_some() {
+                if translated.contains(from) {
                     translated = translated.replace(from, to);
                     if *stop {
                         break;
@@ -775,7 +779,7 @@ impl<C: openxr_data::Compositor> Input<C> {
         };
 
         let mut xr_bindings = Vec::new();
-        for (action_set_name, bindings) in bindings.into_iter() {
+        for (action_set_name, bindings) in bindings.iter() {
             let Some(set) = action_sets.get(action_set_name) else {
                 warn!("Action set {action_set_name} missing.");
                 continue;
@@ -814,9 +818,9 @@ impl<C: openxr_data::Compositor> Input<C> {
                 use super::ActionData::*;
                 match &actions[&name] {
                     Bool(data) => xr::Binding::new(&data.action, path),
-                    Vector1 { action, .. } => xr::Binding::new(&action, path),
-                    Vector2 { action, .. } => xr::Binding::new(&action, path),
-                    Haptic(action) => xr::Binding::new(&action, path),
+                    Vector1 { action, .. } => xr::Binding::new(action, path),
+                    Vector2 { action, .. } => xr::Binding::new(action, path),
+                    Haptic(action) => xr::Binding::new(action, path),
                     Skeleton { .. } | Pose { .. } => unreachable!(),
                 }
             })
@@ -1031,7 +1035,7 @@ fn get_dpad_parent(
     )
 }
 
-fn translate_warn<'a>(action: &'a str) -> impl FnOnce(&String) + 'a {
+fn translate_warn(action: &str) -> impl FnOnce(&String) + '_ {
     move |e| warn!("{e} ({action})")
 }
 
@@ -1051,7 +1055,7 @@ fn handle_sources(
         action_pattern: impl Fn(&super::ActionData),
         bindings: &mut Vec<(String, xr::Path)>,
     ) {
-        if find_action(&actions, &action_path) {
+        if find_action(actions, &action_path) {
             action_pattern(&actions[&action_path]);
             trace!("suggesting {input_path} for {action_path}");
             let binding_path = instance.string_to_path(&input_path).unwrap();
@@ -1227,7 +1231,7 @@ fn handle_sources(
                     GrabInput {
                         grab: ActionBindingOutput { output },
                     },
-                _parameters,
+                ..
             } => {
                 let Ok(translated) =
                     path_translator(&format!("{path}/grab")).inspect_err(translate_warn(output))
@@ -1248,11 +1252,7 @@ fn handle_sources(
                     &mut bindings,
                 );
             }
-            ActionBinding::Scroll {
-                path: _,
-                inputs,
-                parameters: _,
-            } => {
+            ActionBinding::Scroll { inputs, .. } => {
                 warn!("Got scroll binding for input {}, but these are currently unimplemented, skipping", inputs.scroll.output);
             }
             ActionBinding::Trackpad(data) | ActionBinding::Joystick(data) => {
@@ -1332,7 +1332,7 @@ fn handle_haptic_bindings(
     let mut ret = Vec::new();
 
     for SimpleActionBinding { output, path } in bindings {
-        let Ok(translated) = path_translator(&path).inspect_err(translate_warn(output)) else {
+        let Ok(translated) = path_translator(path).inspect_err(translate_warn(output)) else {
             continue;
         };
         if !find_action(actions, output) {

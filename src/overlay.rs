@@ -264,7 +264,7 @@ impl vr::IVROverlay027_Interface for OverlayMan {
     }
     fn ShowOverlay(&self, ulOverlayHandle: vr::VROverlayHandle_t) -> vr::EVROverlayError {
         crate::warn_unimplemented!("ShowOverlay");
-        vr::EVROverlayError::VROverlayError_None
+        vr::EVROverlayError::None
     }
     fn SetOverlayTransformProjection(
         &self,
@@ -359,7 +359,7 @@ impl vr::IVROverlay027_Interface for OverlayMan {
         pOverlayTextureBounds: *const vr::VRTextureBounds_t,
     ) -> vr::EVROverlayError {
         crate::warn_unimplemented!("SetOverlayTextureBounds");
-        vr::EVROverlayError::VROverlayError_None
+        vr::EVROverlayError::None
     }
     fn GetOverlayTextureColorSpace(
         &self,
@@ -416,7 +416,7 @@ impl vr::IVROverlay027_Interface for OverlayMan {
         fWidthInMeters: f32,
     ) -> vr::EVROverlayError {
         crate::warn_unimplemented!("SetOverlayWidthInMeters");
-        vr::EVROverlayError::VROverlayError_None
+        vr::EVROverlayError::None
     }
     fn GetOverlaySortOrder(
         &self,
@@ -569,7 +569,7 @@ impl vr::IVROverlay027_Interface for OverlayMan {
         pOverlayHandle: *mut vr::VROverlayHandle_t,
     ) -> vr::EVROverlayError {
         crate::warn_unimplemented!("FindOverlay");
-        vr::EVROverlayError::VROverlayError_None
+        vr::EVROverlayError::None
     }
 }
 

@@ -15,7 +15,7 @@ pub fn space_relation_to_openvr_pose(
             mDeviceToAbsoluteTracking: Default::default(),
             vVelocity: Default::default(),
             vAngularVelocity: Default::default(),
-            eTrackingResult: vr::ETrackingResult::TrackingResult_Running_OutOfRange,
+            eTrackingResult: vr::ETrackingResult::Running_OutOfRange,
         };
     }
 
@@ -33,7 +33,7 @@ pub fn space_relation_to_openvr_pose(
         mDeviceToAbsoluteTracking: location,
         vVelocity: linear_velo.unwrap_or_default(),
         vAngularVelocity: angular_velo.unwrap_or_default(),
-        eTrackingResult: vr::ETrackingResult::TrackingResult_Running_OK,
+        eTrackingResult: vr::ETrackingResult::Running_OK,
         bPoseIsValid: true,
         bDeviceIsConnected: true,
     }

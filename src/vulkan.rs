@@ -75,7 +75,7 @@ impl VulkanData {
         submit_flags: vr::EVRSubmitFlags,
     ) -> xr::Extent2Di {
         let (texture, array_data) =
-            if (submit_flags & vr::EVRSubmitFlags::Submit_VulkanTextureWithArrayData).0 > 0 {
+            if (submit_flags & vr::EVRSubmitFlags::VulkanTextureWithArrayData).0 > 0 {
                 let data = unsafe {
                     &*(texture as *const vr::VRVulkanTextureData_t
                         as *const vr::VRVulkanTextureArrayData_t)
@@ -171,7 +171,7 @@ impl VulkanData {
                     vk::ImageLayout::TRANSFER_DST_OPTIMAL,
                     &[
                         // SAFETY: ImageResolve and ImageCopy have the same fields and layout.
-                        #[allow(unused_unsafe)]
+                        #[allow(unused_unsafe, clippy::missing_transmute_annotations)]
                         unsafe {
                             std::mem::transmute(copy)
                         },
@@ -228,10 +228,12 @@ impl VulkanData {
                 let queue = unsafe { self.device.get_device_queue(self.queue_family_index, *idx) };
                 queue == self.queue
             })
-            .expect(&format!(
-                "Could not find queue index for queue {:?} in family {}",
-                self.queue, self.queue_family_index
-            ));
+            .unwrap_or_else(|| {
+                panic!(
+                    "Could not find queue index for queue {:?} in family {}",
+                    self.queue, self.queue_family_index
+                )
+            });
 
         xr::vulkan::SessionCreateInfo {
             instance: self.instance.handle().as_raw() as _,
@@ -386,12 +388,12 @@ impl VulkanData {
 fn get_colorspace_corrected_format(format: vk::Format, color_space: vr::EColorSpace) -> vk::Format {
     // https://github.com/ValveSoftware/openvr/wiki/Vulkan#image-formats
     match color_space {
-        vr::EColorSpace::ColorSpace_Auto | vr::EColorSpace::ColorSpace_Gamma => match format {
+        vr::EColorSpace::Auto | vr::EColorSpace::Gamma => match format {
             vk::Format::R8G8B8A8_UNORM | vk::Format::R8G8B8A8_SRGB => vk::Format::R8G8B8A8_SRGB,
             vk::Format::B8G8R8A8_UNORM | vk::Format::B8G8R8A8_SRGB => vk::Format::B8G8R8A8_SRGB,
             _ => panic!("Unhandled texture format: {format:?}"),
         },
-        vr::EColorSpace::ColorSpace_Linear => todo!(),
+        vr::EColorSpace::Linear => todo!(),
     }
 }
 

@@ -141,7 +141,7 @@ impl openxr_data::Compositor for Compositor {
             .enumerate_images()
             .expect("Failed to enumerate swapchain images")
             .into_iter()
-            .map(|img| vk::Image::from_raw(img))
+            .map(vk::Image::from_raw)
             .collect();
 
         backend.post_swapchain_create(images);
@@ -176,7 +176,7 @@ impl vr::IVRCompositor028_Interface for Compositor {
         _pGamePosePredictionID: *mut u32,
     ) -> vr::EVRCompositorError {
         crate::warn_unimplemented!("GetLastPosePredictionIDs");
-        vr::EVRCompositorError::VRCompositorError_None
+        vr::EVRCompositorError::None
     }
     fn GetCompositorBenchmarkResults(
         &self,
@@ -195,7 +195,7 @@ impl vr::IVRCompositor028_Interface for Compositor {
         _nSizeOfRenderSettings: u32,
     ) -> vr::EVRCompositorError {
         crate::warn_unimplemented!("SetStageOverride_Async");
-        vr::EVRCompositorError::VRCompositorError_None
+        vr::EVRCompositorError::None
     }
     fn IsCurrentSceneFocusAppLoading(&self) -> bool {
         false
@@ -208,7 +208,7 @@ impl vr::IVRCompositor028_Interface for Compositor {
     }
     fn SubmitExplicitTimingData(&self) -> vr::EVRCompositorError {
         crate::warn_unimplemented!("SubmitExplicitTimingData");
-        vr::EVRCompositorError::VRCompositorError_None
+        vr::EVRCompositorError::None
     }
     fn SetExplicitTimingMode(&self, _eTimingMode: vr::EVRCompositorTimingMode) {
         crate::warn_unimplemented!("SetExplicitTimingMode");
@@ -342,7 +342,7 @@ impl vr::IVRCompositor028_Interface for Compositor {
         _unTextureCount: u32,
     ) -> vr::EVRCompositorError {
         crate::warn_unimplemented!("SetSkyboxOverride");
-        vr::EVRCompositorError::VRCompositorError_None
+        vr::EVRCompositorError::None
     }
     fn GetCurrentGridAlpha(&self) -> f32 {
         0.0
@@ -421,11 +421,11 @@ impl vr::IVRCompositor028_Interface for Compositor {
             || bounds.uMin == bounds.uMax
             || bounds.vMin == bounds.vMax
         {
-            return vr::EVRCompositorError::VRCompositorError_InvalidBounds;
+            return vr::EVRCompositorError::InvalidBounds;
         }
 
         let Some(texture) = (unsafe { texture.as_ref() }) else {
-            return vr::EVRCompositorError::VRCompositorError_InvalidTexture;
+            return vr::EVRCompositorError::InvalidTexture;
         };
 
         let mut session_lock = self.openxr.session_data.get();
@@ -448,7 +448,7 @@ impl vr::IVRCompositor028_Interface for Compositor {
 
         // No Man's Sky does this.
         if ctrl.eyes_submitted[eye as usize].is_some() {
-            return vr::EVRCompositorError::VRCompositorError_AlreadySubmitted;
+            return vr::EVRCompositorError::AlreadySubmitted;
         }
 
         ctrl.eyes_submitted[eye as usize] = if ctrl.should_render {
@@ -490,7 +490,7 @@ impl vr::IVRCompositor028_Interface for Compositor {
 
         trace!("submitted {eye:?}");
         if !ctrl.eyes_submitted.iter().all(|eye| eye.is_some()) {
-            return vr::EVRCompositorError::VRCompositorError_None;
+            return vr::EVRCompositorError::None;
         }
         // Both eyes submitted: show our images
 
@@ -505,7 +505,7 @@ impl vr::IVRCompositor028_Interface for Compositor {
                 .locate_views(
                     xr::ViewConfigurationType::PRIMARY_STEREO,
                     self.openxr.display_time.get(),
-                    &session_lock.tracking_space(),
+                    session_lock.tracking_space(),
                 )
                 .expect("Couldn't locate views");
 
@@ -555,14 +555,14 @@ impl vr::IVRCompositor028_Interface for Compositor {
         if !layers.is_empty() {
             proj_layer = Some(
                 xr::CompositionLayerProjection::new()
-                    .space(&session_lock.tracking_space())
+                    .space(session_lock.tracking_space())
                     .views(&layers),
             );
         }
 
         let mut layers: Vec<&xr::CompositionLayerBase<_>> = Vec::new();
         if let Some(l) = proj_layer.as_ref() {
-            layers.push(&l);
+            layers.push(l);
         }
 
         ctrl.stream
@@ -574,7 +574,7 @@ impl vr::IVRCompositor028_Interface for Compositor {
             .unwrap();
         trace!("frame submitted");
 
-        vr::EVRCompositorError::VRCompositorError_None
+        vr::EVRCompositorError::None
     }
 
     fn GetLastPoseForTrackedDeviceIndex(
@@ -593,7 +593,7 @@ impl vr::IVRCompositor028_Interface for Compositor {
         game_pose_count: u32,
     ) -> vr::EVRCompositorError {
         if render_pose_count == 0 {
-            return vr::EVRCompositorError::VRCompositorError_None;
+            return vr::EVRCompositorError::None;
         }
         let render_poses = unsafe {
             std::slice::from_raw_parts_mut(render_pose_array, render_pose_count as usize)
@@ -612,7 +612,7 @@ impl vr::IVRCompositor028_Interface for Compositor {
             game_poses.copy_from_slice(&render_poses[0..game_poses.len()]);
         }
 
-        vr::EVRCompositorError::VRCompositorError_None
+        vr::EVRCompositorError::None
     }
 
     fn WaitGetPoses(
@@ -664,14 +664,12 @@ enum GraphicsApi {
 impl GraphicsApi {
     fn new(texture: &vr::Texture_t) -> Self {
         match texture.eType {
-            vr::ETextureType::TextureType_Vulkan => {
+            vr::ETextureType::Vulkan => {
                 let vk_texture = unsafe { &*(texture.handle as *const vr::VRVulkanTextureData_t) };
                 Self::Vulkan(VulkanData::new(vk_texture))
             }
             #[cfg(test)]
-            vr::ETextureType::TextureType_Reserved => {
-                Self::Fake(tests::FakeGraphicsData::new(texture))
-            }
+            vr::ETextureType::Reserved => Self::Fake(tests::FakeGraphicsData::new(texture)),
             other => panic!("Unsupported texture type: {other:?}"),
         }
     }
@@ -691,7 +689,7 @@ impl GraphicsApi {
     ) -> xr::SwapchainCreateInfo<xr::vulkan::Vulkan> {
         match self {
             Self::Vulkan(vk) => {
-                assert_eq!(texture.eType, vr::ETextureType::TextureType_Vulkan);
+                assert_eq!(texture.eType, vr::ETextureType::Vulkan);
                 let vk_texture = unsafe { &*(texture.handle as *const vr::VRVulkanTextureData_t) };
                 vk.get_swapchain_create_info(vk_texture, bounds, texture.eColorSpace)
             }
@@ -733,7 +731,7 @@ impl GraphicsApi {
     ) -> xr::Extent2Di {
         match self {
             Self::Vulkan(vk) => {
-                assert_eq!(texture.eType, vr::ETextureType::TextureType_Vulkan);
+                assert_eq!(texture.eType, vr::ETextureType::Vulkan);
                 let vk_texture = unsafe { &*(texture.handle as *const vr::VRVulkanTextureData_t) };
                 vk.copy_texture_to_swapchain(eye, vk_texture, bounds, image_index, submit_flags)
             }
@@ -754,14 +752,14 @@ mod tests {
     impl FakeGraphicsData {
         fn texture(data: &Arc<VulkanData>) -> vr::Texture_t {
             vr::Texture_t {
-                eType: vr::ETextureType::TextureType_Reserved,
+                eType: vr::ETextureType::Reserved,
                 handle: Arc::into_raw(data.clone()) as _,
-                eColorSpace: vr::EColorSpace::ColorSpace_Auto,
+                eColorSpace: vr::EColorSpace::Auto,
             }
         }
 
         pub fn new(texture: &vr::Texture_t) -> Self {
-            assert_eq!(texture.eType, vr::ETextureType::TextureType_Reserved);
+            assert_eq!(texture.eType, vr::ETextureType::Reserved);
             let ptr = texture.handle as *const VulkanData;
             let vk = unsafe {
                 Arc::increment_strong_count(ptr);
@@ -775,7 +773,7 @@ mod tests {
             texture: &vr::Texture_t,
             _bounds: vr::VRTextureBounds_t,
         ) -> xr::SwapchainCreateInfo<xr::vulkan::Vulkan> {
-            assert_eq!(texture.eType, vr::ETextureType::TextureType_Reserved);
+            assert_eq!(texture.eType, vr::ETextureType::Reserved);
             xr::SwapchainCreateInfo {
                 create_flags: xr::SwapchainCreateFlags::EMPTY,
                 usage_flags: xr::SwapchainUsageFlags::EMPTY,
@@ -819,7 +817,7 @@ mod tests {
                 eye,
                 &FakeGraphicsData::texture(&self.vk),
                 std::ptr::null(),
-                vr::EVRSubmitFlags::Submit_Default,
+                vr::EVRSubmitFlags::Default,
             )
         }
     }
@@ -862,12 +860,12 @@ mod tests {
         for bound in bad_bounds {
             assert_eq!(
                 comp.Submit(
-                    vr::EVREye::Eye_Left,
+                    vr::EVREye::Left,
                     std::ptr::null(),
                     &bound,
-                    vr::EVRSubmitFlags::Submit_Default
+                    vr::EVRSubmitFlags::Default
                 ),
-                VRCompositorError_InvalidBounds,
+                InvalidBounds,
                 "Bound didn't return InvalidBounds: {bound:?}"
             );
         }
@@ -879,7 +877,7 @@ mod tests {
 
         assert_ne!(
             comp.Submit(
-                vr::EVREye::Eye_Left,
+                vr::EVREye::Left,
                 std::ptr::null(),
                 &vr::VRTextureBounds_t {
                     uMin: 0.0,
@@ -887,9 +885,9 @@ mod tests {
                     uMax: 1.0,
                     vMax: 0.0
                 },
-                vr::EVRSubmitFlags::Submit_Default
+                vr::EVRSubmitFlags::Default
             ),
-            VRCompositorError_InvalidBounds
+            InvalidBounds
         );
     }
 
@@ -897,16 +895,13 @@ mod tests {
     fn error_on_submit_without_waitgetposes() {
         let f = Fixture::new();
 
-        assert_eq!(f.wait_get_poses(), VRCompositorError_None);
-        assert_eq!(f.submit(vr::EVREye::Eye_Left), VRCompositorError_None);
-        assert_eq!(f.submit(vr::EVREye::Eye_Right), VRCompositorError_None);
-        assert_eq!(
-            f.submit(vr::EVREye::Eye_Left),
-            VRCompositorError_AlreadySubmitted
-        );
+        assert_eq!(f.wait_get_poses(), None);
+        assert_eq!(f.submit(vr::EVREye::Left), None);
+        assert_eq!(f.submit(vr::EVREye::Right), None);
+        assert_eq!(f.submit(vr::EVREye::Left), AlreadySubmitted);
 
-        assert_eq!(f.wait_get_poses(), VRCompositorError_None);
-        assert_eq!(f.submit(vr::EVREye::Eye_Left), VRCompositorError_None);
+        assert_eq!(f.wait_get_poses(), None);
+        assert_eq!(f.submit(vr::EVREye::Left), None);
     }
 
     #[test]
@@ -914,10 +909,10 @@ mod tests {
         let f = Fixture::new();
 
         // Enable frame controller
-        assert_eq!(f.wait_get_poses(), VRCompositorError_None);
-        assert_eq!(f.submit(vr::EVREye::Eye_Left), VRCompositorError_None);
+        assert_eq!(f.wait_get_poses(), None);
+        assert_eq!(f.submit(vr::EVREye::Left), None);
 
-        assert_eq!(f.wait_get_poses(), VRCompositorError_None);
-        assert_eq!(f.wait_get_poses(), VRCompositorError_None);
+        assert_eq!(f.wait_get_poses(), None);
+        assert_eq!(f.wait_get_poses(), None);
     }
 }

@@ -76,6 +76,7 @@ impl ClientCore {
             openxr: RwLock::default(),
         });
 
+        #[allow(clippy::redundant_guards)]
         let base = match version {
             x if x == c"IVRClientCore_003" => {
                 Vtable::V3(<Self as Inherits<vr::IVRClientCore003>>::new_wrapped(&ret))
@@ -95,9 +96,7 @@ impl ClientCore {
         T: InterfaceImpl + 'static,
         InitFn: FnOnce(&Injector) -> T,
     {
-        let Some(get_interface) = T::get_version(version) else {
-            return None;
-        };
+        let get_interface = T::get_version(version)?;
         let mut store = self.interface_store.lock().unwrap();
         let item = match store.entry::<T>() {
             Entry::Occupied(entry) => entry.get().clone(),
@@ -160,11 +159,11 @@ impl IVRClientCore003_Interface for ClientCore {
                 }
                 *self.openxr.write().unwrap() = Some(data);
 
-                vr::EVRInitError::VRInitError_None
+                vr::EVRInitError::None
             }
             Err(e) => {
                 error!("Creating OpenXR data failed: {e:?}");
-                vr::EVRInitError::VRInitError_Init_VRServiceStartupFailed
+                vr::EVRInitError::Init_VRServiceStartupFailed
             }
         }
     }
@@ -172,7 +171,7 @@ impl IVRClientCore003_Interface for ClientCore {
         self.interface_store.lock().unwrap().clear();
 
         let mut openxr = self.openxr.write().unwrap();
-        assert_eq!(Arc::strong_count(&openxr.as_ref().unwrap()), 1);
+        assert_eq!(Arc::strong_count(openxr.as_ref().unwrap()), 1);
         openxr.take();
     }
     fn GetIDForVRInitError(&self, _: vr::EVRInitError) -> *const c_char {
@@ -193,7 +192,7 @@ impl IVRClientCore003_Interface for ClientCore {
         debug!("requested interface {interface:?}");
 
         if !error.is_null() {
-            unsafe { *error = vr::EVRInitError::VRInitError_None };
+            unsafe { *error = vr::EVRInitError::None };
         }
 
         let openxr = self.openxr.read().unwrap();
@@ -240,10 +239,10 @@ impl IVRClientCore003_Interface for ClientCore {
         let interface = unsafe { CStr::from_ptr(interface_version) };
         debug!("app asking about interface: {interface:?}");
         if KNOWN_INTERFACES.contains(&interface) {
-            vr::EVRInitError::VRInitError_None
+            vr::EVRInitError::None
         } else {
             warn!("app asked about unknown interface {interface:?}");
-            vr::EVRInitError::VRInitError_Init_InvalidInterface
+            vr::EVRInitError::Init_InvalidInterface
         }
     }
 }
@@ -278,10 +277,7 @@ impl<T: InterfaceImpl> Injected<T> {
         self.item
             .get()
             .or_else(|| {
-                let Some(item) = self.store.lock().unwrap().get::<T>() else {
-                    return None;
-                };
-                let item: Arc<ErasedInterface> = item;
+                let item: Arc<ErasedInterface> = self.store.lock().unwrap().get::<T>()?;
                 self.item
                     .set(Arc::downgrade(&item))
                     .unwrap_or_else(|_| unreachable!());
@@ -361,15 +357,11 @@ mod tests {
     #[test]
     fn restart() {
         let core = ClientCore::new(c"IVRClientCore_003").unwrap();
-        core.clone().Init(
-            vr::EVRApplicationType::VRApplication_Scene,
-            std::ptr::null(),
-        );
+        core.clone()
+            .Init(vr::EVRApplicationType::Scene, std::ptr::null());
         core.clone().Cleanup();
-        core.clone().Init(
-            vr::EVRApplicationType::VRApplication_Scene,
-            std::ptr::null(),
-        );
+        core.clone()
+            .Init(vr::EVRApplicationType::Scene, std::ptr::null());
     }
 
     #[test]

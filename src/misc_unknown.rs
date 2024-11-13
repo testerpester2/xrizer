@@ -22,6 +22,10 @@ impl InterfaceImpl for UnknownInterfaces {
     }
 
     fn get_version(version: &CStr) -> Option<Box<dyn FnOnce(&Arc<Self>) -> *mut c_void>> {
+        #[allow(
+            clippy::redundant_guards,
+            reason = "https://github.com/rust-lang/rust-clippy/issues/13681"
+        )]
         match version {
             x if x == c"IVRMailbox_001" => Some(Box::new(|this| &this.mailbox as *const _ as _)),
             x if x == c"IVRControlPanel_006" => {
@@ -50,7 +54,7 @@ where
     }
 }
 
-const UNKNOWN_TAG: &'static str = "unknown_interfaces";
+const UNKNOWN_TAG: &str = "unknown_interfaces";
 
 macro_rules! gen_vtable {
     (struct $name:ident {

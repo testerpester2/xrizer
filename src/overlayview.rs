@@ -15,7 +15,7 @@ impl vr::IVROverlayView003_Interface for OverlayView {
         todo!()
     }
     fn ReleaseOverlayView(&self, _: *mut vr::VROverlayView_t) -> vr::EVROverlayError {
-        vr::EVROverlayError::VROverlayError_InvalidHandle
+        vr::EVROverlayError::InvalidHandle
     }
     fn AcquireOverlayView(
         &self,
