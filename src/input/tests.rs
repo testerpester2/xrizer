@@ -382,7 +382,7 @@ fn input_state_flow() {
 
     let state = f.get_bool_state(boolact).unwrap();
     assert_eq!(state.bState, false);
-    assert_eq!(state.bActive, true);
+    assert_eq!(state.bActive, false);
     assert_eq!(state.bChanged, false);
 
     f.sync(vr::VRActiveActionSet_t {
@@ -392,7 +392,7 @@ fn input_state_flow() {
 
     let state = f.get_bool_state(boolact).unwrap();
     assert_eq!(state.bState, false);
-    assert_eq!(state.bActive, true);
+    assert_eq!(state.bActive, false);
     assert_eq!(state.bChanged, false);
 
     fakexr::set_action_state(
@@ -713,4 +713,47 @@ fn raw_pose_waitgetposes_and_skeletal_pose_identical() {
         hmdmatrix34_to_pose(waitgetposes_pose.mDeviceToAbsoluteTracking),
         hmdmatrix34_to_pose(skel_pose.pose.mDeviceToAbsoluteTracking),
     );
+}
+
+#[test]
+fn dpad_input_use_non_dpad_when_available() {
+    let f = Fixture::new();
+    let set1 = f.get_action_set_handle(c"/actions/set1");
+    let boolact = f.get_action_handle(c"/actions/set1/in/boolact");
+
+    f.load_actions(c"actions_dpad_mixed.json");
+    f.input.openxr.restart_session();
+
+    let data = f.input.openxr.session_data.get();
+    let actions = data.input_data.get_loaded_actions().unwrap();
+    let super::ActionData::Bool(super::BoolActionData { dpad_data, .. }) =
+        actions.try_get_action(boolact).unwrap()
+    else {
+        panic!("should be bool action");
+    };
+
+    assert!(dpad_data.is_some());
+    f.sync(vr::VRActiveActionSet_t {
+        ulActionSet: set1,
+        ..Default::default()
+    });
+
+    let state = f.get_bool_state(boolact).unwrap();
+    assert_eq!(state.bState, false);
+    assert_eq!(state.bActive, false);
+    assert_eq!(state.bChanged, false);
+
+    fakexr::set_action_state(
+        f.get_action::<bool>(boolact),
+        fakexr::ActionState::Bool(true),
+    );
+    f.sync(vr::VRActiveActionSet_t {
+        ulActionSet: set1,
+        ..Default::default()
+    });
+
+    let state = f.get_bool_state(boolact).unwrap();
+    assert_eq!(state.bState, true);
+    assert_eq!(state.bActive, true);
+    assert_eq!(state.bChanged, true);
 }

@@ -25,6 +25,12 @@ pub fn set_action_state(action: xr::Action, state: ActionState) {
     let s = action.state.load();
     assert_eq!(std::mem::discriminant(&state), std::mem::discriminant(&s));
     action.pending_state.store(Some(state));
+    action.active.store(true, Ordering::Relaxed);
+}
+
+pub fn deactivate_action(action: xr::Action) {
+    let action = action.to_handle().unwrap();
+    action.active.store(false, Ordering::Relaxed);
 }
 
 #[derive(Copy, Clone)]
@@ -505,6 +511,7 @@ impl ActionSet {
 struct Action {
     instance: Weak<Instance>,
     name: CString,
+    active: AtomicBool,
     localized_name: CString,
     state: AtomicCell<ActionState>,
     changed: AtomicBool,
@@ -680,6 +687,7 @@ extern "system" fn create_action(
 
     let a = Arc::new(Action {
         instance: set.instance.clone(),
+        active: false.into(),
         name: name.to_owned(),
         changed: false.into(),
         localized_name: CStr::from_bytes_until_nul(unsafe {
@@ -1028,12 +1036,12 @@ extern "system" fn get_action_state_boolean(
     };
     let state = unsafe { state.as_mut().unwrap() };
     if set.active.load(Ordering::Relaxed) {
-        state.is_active = true.into();
-        state.current_state = b.into();
-        state.changed_since_last_sync = action.changed.load(Ordering::Relaxed).into();
-    } else {
-        state.is_active = false.into();
-        state.current_state = false.into();
+        let active = action.active.load(Ordering::Relaxed);
+        if active {
+            state.current_state = b.into();
+            state.changed_since_last_sync = action.changed.load(Ordering::Relaxed).into();
+        }
+        state.is_active = active.into();
     }
     xr::Result::SUCCESS
 }
@@ -1063,11 +1071,11 @@ extern "system" fn get_action_state_float(
     };
     let state = unsafe { state.as_mut().unwrap() };
     if set.active.load(Ordering::Relaxed) {
-        state.is_active = true.into();
-        state.current_state = f;
-    } else {
-        state.is_active = false.into();
-        state.current_state = 0.0;
+        let active = action.active.load(Ordering::Relaxed);
+        if active {
+            state.current_state = f;
+        }
+        state.is_active = active.into();
     }
     xr::Result::SUCCESS
 }
@@ -1097,11 +1105,11 @@ extern "system" fn get_action_state_vector2f(
     };
     let state = unsafe { state.as_mut().unwrap() };
     if set.active.load(Ordering::Relaxed) {
-        state.is_active = true.into();
-        state.current_state = xr::Vector2f { x, y };
-    } else {
-        state.is_active = false.into();
-        state.current_state = Default::default();
+        let active = action.active.load(Ordering::Relaxed);
+        if active {
+            state.current_state = xr::Vector2f { x, y };
+        }
+        state.is_active = active.into();
     }
 
     xr::Result::SUCCESS

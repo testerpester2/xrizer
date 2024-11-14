@@ -154,6 +154,16 @@ impl BoolActionData {
         session: &xr::Session<G>,
         subaction_path: xr::Path,
     ) -> xr::Result<xr::ActionState<bool>> {
+        // First, we try the normal boolean action
+        // We may have dpad data, but some controller types may not have been bound to dpad inputs,
+        // so we need to try the regular action first.
+        let state = self.action.state(session, subaction_path)?;
+        if state.is_active {
+            return Ok(state);
+        }
+
+        // state.is_active being false implies there's nothing bound to the action, so then we try
+        // our dpad input, if available.
         let Some(DpadData {
             parent,
             click_or_touch,
@@ -161,8 +171,7 @@ impl BoolActionData {
             last_state,
         }) = &self.dpad_data
         else {
-            // non dpad action - just use boolean
-            return self.action.state(session, subaction_path);
+            return Ok(state);
         };
         let parent_state = parent.state(session, xr::Path::NULL)?;
         let mut ret_state = xr::ActionState {
@@ -751,11 +760,7 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
                 return vr::EVRInputError::None;
             }};
         }
-        let subaction_path = match self.subaction_path_from_handle(restrict_to_device) {
-            Some(p) => p,
-            None => no_data!(),
-        };
-
+        let subaction_path = get_subaction_path!(self, restrict_to_device, action_data);
         let (active_origin, hand) = match loaded.try_get_action(action) {
             Ok(ActionData::Pose { bindings }) => {
                 let (hand, hand_info, active_origin) = match subaction_path {
@@ -898,7 +903,7 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
 
     fn GetDigitalActionData(
         &self,
-        action: vr::VRActionHandle_t,
+        handle: vr::VRActionHandle_t,
         action_data: *mut vr::InputDigitalActionData_t,
         action_data_size: u32,
         restrict_to_device: vr::VRInputValueHandle_t,
@@ -913,17 +918,8 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
             return vr::EVRInputError::InvalidHandle;
         };
 
-        let subaction_path = match self.subaction_path_from_handle(restrict_to_device) {
-            Some(p) => p,
-            None => {
-                unsafe {
-                    action_data.write(Default::default());
-                }
-                return vr::EVRInputError::None;
-            }
-        };
-
-        let action = match loaded.try_get_action(action) {
+        let subaction_path = get_subaction_path!(self, restrict_to_device, action_data);
+        let action = match loaded.try_get_action(handle) {
             Ok(action) => {
                 let ActionData::Bool(action) = &action else {
                     return vr::EVRInputError::WrongType;
@@ -938,9 +934,9 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
             action_data.write(vr::InputDigitalActionData_t {
                 bActive: state.is_active,
                 bState: state.current_state,
-                activeOrigin: 0, // TODO
+                activeOrigin: restrict_to_device, // TODO
                 bChanged: state.changed_since_last_sync,
-                fUpdateTime: -1.0, // TODO
+                fUpdateTime: 0.0, // TODO
             });
         }
 
