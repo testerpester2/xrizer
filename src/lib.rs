@@ -67,7 +67,8 @@ trait InterfaceImpl: Sync + Send + 'static {
 macro_rules! warn_unimplemented {
     ($function:literal) => {
         crate::warn_once!(
-            concat!("[ONCE] ", $function, " unimplemented ({}:{})"),
+            "{} unimplemented ({}:{})",
+            $function,
             file!(),
             line!()
         );
@@ -75,10 +76,10 @@ macro_rules! warn_unimplemented {
 }
 use warn_unimplemented;
 macro_rules! warn_once {
-    ($($tt:tt)*) => {{
+    ($literal:literal $(,$($tt:tt)*)?) => {{
         static ONCE: std::sync::Once = std::sync::Once::new();
         ONCE.call_once(|| {
-            log::warn!($($tt)*);
+            log::warn!(concat!("[ONCE] ", $literal) $(,$($tt)*)?);
         });
     }}
 }

@@ -479,9 +479,11 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
         let ActionData::Skeleton { hand, hand_tracker } = action else {
             return vr::EVRInputError::WrongType;
         };
-        let hand_tracker = hand_tracker
-            .as_ref()
-            .unwrap_or_else(|| todo!("Support no handtracking"));
+        let Some(hand_tracker) = hand_tracker.as_ref() else {
+            // TODO: add simulated skeleton data
+            crate::warn_once!("Simulated skeleton data not implemented.");
+            return vr::EVRInputError::None;
+        };
 
         let legacy = session_data.input_data.legacy_actions.get().unwrap();
         let Some(raw) = match hand {
