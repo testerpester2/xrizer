@@ -1047,48 +1047,50 @@ fn handle_sources(
     action_set: &xr::ActionSet,
     sources: &[ActionBinding],
 ) -> Vec<(String, xr::Path)> {
-    fn try_get_binding(
-        actions: &LoadedActionDataMap,
-        instance: &xr::Instance,
-        action_path: String,
-        input_path: String,
-        action_pattern: impl Fn(&super::ActionData),
-        bindings: &mut Vec<(String, xr::Path)>,
-    ) {
-        if find_action(actions, &action_path) {
-            action_pattern(&actions[&action_path]);
-            trace!("suggesting {input_path} for {action_path}");
-            let binding_path = instance.string_to_path(&input_path).unwrap();
-            bindings.push((action_path, binding_path));
-        }
+    let bindings = RefCell::new(Vec::new());
+
+    trait ActionPattern {
+        fn check_match(&self, data: &super::ActionData, name: &str);
+    }
+    macro_rules! action_match {
+        ($pat:pat, $extra:literal) => {{
+            struct S;
+            impl ActionPattern for S {
+                fn check_match(&self, data: &super::ActionData, name: &str) {
+                    assert!(
+                        matches!(data, $pat),
+                        "Data for action {name} didn't match pattern {} ({})",
+                        stringify!($pat),
+                        $extra
+                    );
+                }
+            }
+            &S
+        }};
+        ($pat:pat) => {
+            action_match!($pat, "")
+        };
     }
 
-    macro_rules! action_match {
-        ($pat:pat, $($assert_msg:tt)*) => {
-            |data| {
-                assert!(
-                    matches!(data, $pat),
-                    $($assert_msg)*
-                )
+    let actions = RefCell::new(actions);
+    let try_get_binding =
+        |action_path: String, input_path: String, action_pattern: &dyn ActionPattern| {
+            let actions = actions.borrow();
+            if find_action(&actions, &action_path) {
+                action_pattern.check_match(&actions[&action_path], &action_path);
+                trace!("suggesting {input_path} for {action_path}");
+                let binding_path = instance.string_to_path(&input_path).unwrap();
+                bindings.borrow_mut().push((action_path, binding_path));
             }
-        }
-    }
+        };
 
     use super::ActionData::*;
-    let mut bindings = Vec::new();
     for mode in sources {
-        let mut try_get_bool_binding = |action_path: &str, input_path: String| {
+        let try_get_bool_binding = |action_path, input_path| {
             try_get_binding(
-                actions,
-                instance,
-                action_path.to_string(),
+                action_path,
                 input_path,
-                action_match!(
-                    Bool(_) | Vector1 { .. },
-                    "Action for {} should be a bool or float",
-                    action_path
-                ),
-                &mut bindings,
+                action_match!(Bool(_) | Vector1 { .. }),
             );
         };
 
@@ -1106,7 +1108,7 @@ fn handle_sources(
                         continue;
                     };
 
-                    try_get_bool_binding(output, translated);
+                    try_get_bool_binding(output.to_string(), translated);
                 }
 
                 if let Some(ActionBindingOutput { output }) = &inputs.double {
@@ -1133,12 +1135,12 @@ fn handle_sources(
                     &parent_translated,
                     action_set_name,
                     action_set,
-                    actions,
+                    &mut actions.borrow_mut(),
                     inputs,
                     parameters.as_ref(),
                 );
 
-                bindings.extend(data);
+                bindings.borrow_mut().extend(data);
             }
             ActionBinding::Trigger {
                 path,
@@ -1155,15 +1157,12 @@ fn handle_sources(
                     };
 
                     try_get_binding(
-                        actions,
-                        instance,
-                        output.clone(),
+                        output.to_string(),
                         translated,
                         action_match!(
                             Bool(_) | Vector1 { .. },
                             "Trigger action should be a bool or float"
                         ),
-                        &mut bindings,
                     );
                 }
             }
@@ -1186,16 +1185,9 @@ fn handle_sources(
                 };
 
                 try_get_binding(
-                    actions,
-                    instance,
                     output.to_string(),
                     translated,
-                    action_match! {
-                        Vector1 { .. },
-                        "Expected Vector1 action for {}",
-                        output
-                    },
-                    &mut bindings,
+                    action_match!(Vector1 { .. }),
                 )
             }
             ActionBinding::ForceSensor {
@@ -1213,16 +1205,9 @@ fn handle_sources(
                 };
 
                 try_get_binding(
-                    actions,
-                    instance,
                     output.to_string(),
                     translated,
-                    action_match! {
-                        Vector1 { .. },
-                        "Expected Vector1 action for {}",
-                        output
-                    },
-                    &mut bindings,
+                    action_match!(Vector1 { .. }),
                 );
             }
             ActionBinding::Grab {
@@ -1240,16 +1225,12 @@ fn handle_sources(
                 };
 
                 try_get_binding(
-                    actions,
-                    instance,
                     output.to_string(),
                     translated,
                     action_match!(
                         Bool(_) | Vector1 { .. },
-                        "Grab action {} should be a bool or float",
-                        output
+                        "Grab action should be a bool or float"
                     ),
-                    &mut bindings,
                 );
             }
             ActionBinding::Scroll { inputs, .. } => {
@@ -1276,7 +1257,7 @@ fn handle_sources(
                             .ok(),
                     )
                 }) {
-                    try_get_bool_binding(output, click_path);
+                    try_get_bool_binding(output.to_string(), click_path);
                 }
 
                 if let Some((output, touch_path)) = touch.as_ref().and_then(|b| {
@@ -1286,27 +1267,20 @@ fn handle_sources(
                             .ok(),
                     )
                 }) {
-                    try_get_bool_binding(output, touch_path);
+                    try_get_bool_binding(output.to_string(), touch_path);
                 }
 
                 if let Some(position) = position.as_ref() {
                     try_get_binding(
-                        actions,
-                        instance,
                         position.output.clone(),
-                        translated.clone(),
-                        action_match!(
-                            Vector2 { .. },
-                            "Expected Vector2 action for {}",
-                            position.output
-                        ),
-                        &mut bindings,
+                        translated,
+                        action_match!(Vector2 { .. }),
                     );
                 }
             }
         }
     }
-    bindings
+    bindings.into_inner()
 }
 
 fn handle_skeleton_bindings(actions: &LoadedActionDataMap, bindings: &[SkeletonActionBinding]) {
