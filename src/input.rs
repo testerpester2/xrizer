@@ -92,10 +92,7 @@ impl InputSessionData {
 
 enum ActionData {
     Bool(BoolActionData),
-    Vector1 {
-        action: xr::Action<f32>,
-        last_value: AtomicF32,
-    },
+    Vector1(FloatActionData),
     Vector2 {
         action: xr::Action<xr::Vector2f>,
         last_value: (AtomicF32, AtomicF32),
@@ -139,16 +136,18 @@ enum DpadDirection {
 struct BoolActionData {
     action: xr::Action<bool>,
     dpad_data: Option<DpadData>,
-}
-
-struct DpadData {
-    parent: xr::Action<xr::Vector2f>,
-    click_or_touch: Option<xr::Action<bool>>,
-    direction: DpadDirection,
-    last_state: AtomicBool,
+    grab_data: Option<GrabBindingData>,
 }
 
 impl BoolActionData {
+    fn new(action: xr::Action<bool>) -> Self {
+        Self {
+            action,
+            dpad_data: None,
+            grab_data: None,
+        }
+    }
+
     fn state<G>(
         &self,
         session: &xr::Session<G>,
@@ -158,22 +157,74 @@ impl BoolActionData {
         // We may have dpad data, but some controller types may not have been bound to dpad inputs,
         // so we need to try the regular action first.
         let state = self.action.state(session, subaction_path)?;
+
         if state.is_active {
             return Ok(state);
         }
 
         // state.is_active being false implies there's nothing bound to the action, so then we try
         // our dpad input, if available.
-        let Some(DpadData {
-            parent,
-            click_or_touch,
-            direction,
-            last_state,
-        }) = &self.dpad_data
-        else {
+
+        if let Some(data) = &self.dpad_data {
+            if let Some(state) = data.state(session)? {
+                return Ok(state);
+            }
+        }
+
+        if let Some(data) = &self.grab_data {
+            if let Some(state) = data.grabbed(session, subaction_path)? {
+                return Ok(state);
+            }
+        }
+
+        Ok(state)
+    }
+}
+
+struct FloatActionData {
+    action: xr::Action<f32>,
+    last_value: AtomicF32,
+    grab_data: Option<GrabBindingData>,
+}
+
+impl FloatActionData {
+    fn new(action: xr::Action<f32>) -> Self {
+        Self {
+            action,
+            last_value: Default::default(),
+            grab_data: None,
+        }
+    }
+
+    fn state<G>(
+        &self,
+        session: &xr::Session<G>,
+        subaction_path: xr::Path,
+    ) -> xr::Result<xr::ActionState<f32>> {
+        let state = self.action.state(session, subaction_path)?;
+        if state.is_active {
             return Ok(state);
-        };
-        let parent_state = parent.state(session, xr::Path::NULL)?;
+        }
+
+        if let Some(_) = &self.grab_data {
+            todo!("handle grab data");
+        }
+
+        Ok(state)
+    }
+}
+
+struct DpadData {
+    parent: xr::Action<xr::Vector2f>,
+    click_or_touch: Option<xr::Action<bool>>,
+    direction: DpadDirection,
+    last_state: AtomicBool,
+}
+
+impl DpadData {
+    const CENTER_ZONE: f32 = 0.5;
+    fn state<G>(&self, session: &xr::Session<G>) -> xr::Result<Option<xr::ActionState<bool>>> {
+        let parent_state = self.parent.state(session, xr::Path::NULL)?;
         let mut ret_state = xr::ActionState {
             current_state: false,
             last_change_time: parent_state.last_change_time, // TODO: this is wrong
@@ -181,7 +232,8 @@ impl BoolActionData {
             is_active: parent_state.is_active,
         };
 
-        let active = click_or_touch
+        let active = self
+            .click_or_touch
             .as_ref()
             .map(|a| {
                 // If this action isn't bound in the current interaction profile,
@@ -193,7 +245,7 @@ impl BoolActionData {
             .unwrap_or(Ok(true))?;
 
         if !active {
-            return Ok(ret_state);
+            return Ok(None);
         }
 
         // convert to polar coordinates
@@ -201,38 +253,77 @@ impl BoolActionData {
         let radius = x.hypot(y);
         let angle = y.atan2(x);
 
-        // arbitrary
-        const CENTER_ZONE: f32 = 0.5;
-
         // pi/2 wedges, no overlap
-        let in_bounds = match direction {
+        let in_bounds = match self.direction {
             DpadDirection::North => {
-                radius >= CENTER_ZONE && (FRAC_PI_4..=3.0 * FRAC_PI_4).contains(&angle)
+                radius >= Self::CENTER_ZONE && (FRAC_PI_4..=3.0 * FRAC_PI_4).contains(&angle)
             }
             DpadDirection::East => {
-                radius >= CENTER_ZONE && (-FRAC_PI_4..=FRAC_PI_4).contains(&angle)
+                radius >= Self::CENTER_ZONE && (-FRAC_PI_4..=FRAC_PI_4).contains(&angle)
             }
             DpadDirection::South => {
-                radius >= CENTER_ZONE && (-3.0 * FRAC_PI_4..=-FRAC_PI_4).contains(&angle)
+                radius >= Self::CENTER_ZONE && (-3.0 * FRAC_PI_4..=-FRAC_PI_4).contains(&angle)
             }
             // west section is disjoint with atan2
             DpadDirection::West => {
-                radius >= CENTER_ZONE
+                radius >= Self::CENTER_ZONE
                     && ((3.0 * FRAC_PI_4..=PI).contains(&angle)
                         || (-PI..=-3.0 * FRAC_PI_4).contains(&angle))
             }
-            DpadDirection::Center => radius < CENTER_ZONE,
+            DpadDirection::Center => radius < Self::CENTER_ZONE,
         };
 
         ret_state.current_state = in_bounds;
-        if last_state
+        if self
+            .last_state
             .compare_exchange(!in_bounds, in_bounds, Ordering::Relaxed, Ordering::Relaxed)
             .is_ok()
         {
             ret_state.changed_since_last_sync = true;
         }
 
-        Ok(ret_state)
+        Ok(Some(ret_state))
+    }
+}
+
+struct GrabBindingData {
+    action: xr::Action<f32>,
+    last_state: AtomicBool,
+}
+
+impl GrabBindingData {
+    fn new(action: xr::Action<f32>) -> Self {
+        Self {
+            action,
+            last_state: false.into(),
+        }
+    }
+
+    const THRESHOLD: f32 = 0.3;
+    // Returns None if the grab data is not active.
+    fn grabbed<G>(
+        &self,
+        session: &xr::Session<G>,
+        subaction_path: xr::Path,
+    ) -> xr::Result<Option<xr::ActionState<bool>>> {
+        let state = self.action.state(session, subaction_path)?;
+        if !state.is_active {
+            Ok(None)
+        } else {
+            let value = state.current_state >= Self::THRESHOLD;
+            let changed_since_last_sync = self
+                .last_state
+                .compare_exchange(!value, value, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok();
+            println!("{changed_since_last_sync}");
+
+            Ok(Some(xr::ActionState {
+                current_state: value,
+                changed_since_last_sync,
+                last_change_time: state.last_change_time,
+                is_active: state.is_active,
+            }))
+        }
     }
 }
 
@@ -856,13 +947,13 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
         let subaction_path = get_subaction_path!(self, restrict_to_device, action_data);
 
         let (state, delta) = match action {
-            ActionData::Vector1 { action, last_value } => {
-                let state = action.state(&session_data.session, subaction_path).unwrap();
+            ActionData::Vector1(data) => {
+                let state = data.state(&session_data.session, subaction_path).unwrap();
                 let delta = xr::Vector2f {
-                    x: state.current_state - last_value.load(),
+                    x: state.current_state - data.last_value.load(),
                     y: 0.0,
                 };
-                last_value.store(state.current_state);
+                data.last_value.store(state.current_state);
                 (
                     xr::ActionState::<xr::Vector2f> {
                         current_state: xr::Vector2f {

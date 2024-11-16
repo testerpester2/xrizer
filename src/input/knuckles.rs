@@ -148,7 +148,6 @@ mod tests {
                 "/user/hand/left/input/trigger/value".into(),
                 "/user/hand/right/input/trigger/value".into(),
                 "/user/hand/left/input/squeeze/force".into(),
-                "/user/hand/right/input/squeeze/force".into(),
                 "/user/hand/right/input/squeeze/value".into(),
             ],
         );

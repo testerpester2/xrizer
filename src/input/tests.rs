@@ -74,7 +74,7 @@ macro_rules! impl_action_type {
 }
 
 impl_action_type!(bool, "boolean", ActionData::Bool(a) => a.action.as_raw());
-impl_action_type!(f32, "vector1", ActionData::Vector1{ action, .. } => action.as_raw());
+impl_action_type!(f32, "vector1", ActionData::Vector1(d) => d.action.as_raw());
 impl_action_type!(xr::Vector2f, "vector2", ActionData::Vector2{ action, .. } => action.as_raw());
 impl_action_type!(xr::Haptic, "haptic", ActionData::Haptic(a) => a.as_raw());
 //impl_action_type!(xr::Posef, "pose", ActionData::Pose { action, .. } => action.as_raw());
@@ -756,4 +756,43 @@ fn dpad_input_use_non_dpad_when_available() {
     assert_eq!(state.bState, true);
     assert_eq!(state.bActive, true);
     assert_eq!(state.bChanged, true);
+}
+
+#[test]
+fn grab_binding() {
+    let f = Fixture::new();
+    let set1 = f.get_action_set_handle(c"/actions/set1");
+    let boolact = f.get_action_handle(c"/actions/set1/in/boolact");
+
+    f.load_actions(c"actions.json");
+
+    let data = f.input.openxr.session_data.get();
+    let actions = data.input_data.get_loaded_actions().unwrap();
+    let super::ActionData::Bool(super::BoolActionData { grab_data, .. }) =
+        actions.try_get_action(boolact).unwrap()
+    else {
+        panic!("should be bool action");
+    };
+    let grab_data = grab_data.as_ref().unwrap();
+
+    let value_state_check = |value, state, changed| {
+        fakexr::set_action_state(grab_data.action.as_raw(), fakexr::ActionState::Float(value));
+        f.sync(vr::VRActiveActionSet_t {
+            ulActionSet: set1,
+            ..Default::default()
+        });
+
+        let s = f.get_bool_state(boolact).unwrap();
+        assert_eq!(s.bState, state);
+        assert_eq!(s.bActive, true);
+        assert_eq!(s.bChanged, changed);
+    };
+
+    value_state_check(0.29, false, false);
+    value_state_check(0.3, true, true);
+    value_state_check(0.3, true, false);
+    value_state_check(0.29, false, true);
+    value_state_check(0.29, false, false);
+    value_state_check(0.3, true, true);
+    value_state_check(0.29, false, true);
 }

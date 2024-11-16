@@ -98,6 +98,16 @@
 				},
 				{
 					"inputs": {
+						"grab": {
+							"output": "/actions/set1/in/boolact"
+						}
+					},
+					"parameters": {},
+					"mode": "grab",
+					"path": "/user/hand/right/input/grip"
+				},
+				{
+					"inputs": {
 						"click": {
 							"output": "/actions/set1/in/boolact"
 						}

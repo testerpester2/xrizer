@@ -314,17 +314,11 @@ fn load_actions(
         let (path, action) = match &action {
             ActionType::Boolean(data) => (
                 &data.name,
-                Bool(super::BoolActionData {
-                    action: create_action!(bool, data),
-                    dpad_data: None,
-                }),
+                Bool(super::BoolActionData::new(create_action!(bool, data))),
             ),
             ActionType::Vector1(data) => (
                 &data.name,
-                Vector1 {
-                    action: create_action!(f32, data),
-                    last_value: super::AtomicF32::new(0.0),
-                },
+                Vector1(super::FloatActionData::new(create_action!(f32, data))),
             ),
             ActionType::Vector2(data) => (
                 &data.name,
@@ -772,7 +766,9 @@ impl<C: openxr_data::Compositor> Input<C> {
             }
             trace!("translated {path} to {translated}");
             if !legal_paths.contains(&translated) {
-                Err(format!("Action for invalid path {translated}, ignoring"))
+                Err(InvalidActionPath(format!(
+                    "Action for invalid path {translated}, ignoring"
+                )))
             } else {
                 Ok(translated)
             }
@@ -809,6 +805,10 @@ impl<C: openxr_data::Compositor> Input<C> {
                 action_set_name,
                 set,
                 &bindings.sources,
+                &[
+                    self.openxr.left_hand.subaction_path,
+                    self.openxr.right_hand.subaction_path,
+                ],
             ));
         }
 
@@ -816,9 +816,12 @@ impl<C: openxr_data::Compositor> Input<C> {
             .into_iter()
             .map(|(name, path)| {
                 use super::ActionData::*;
-                match &actions[&name] {
+                match actions
+                    .get(&name)
+                    .unwrap_or_else(|| panic!("Couldn't find data for action {name}"))
+                {
                     Bool(data) => xr::Binding::new(&data.action, path),
-                    Vector1 { action, .. } => xr::Binding::new(action, path),
+                    Vector1(data) => xr::Binding::new(&data.action, path),
                     Vector2 { action, .. } => xr::Binding::new(action, path),
                     Haptic(action) => xr::Binding::new(action, path),
                     Skeleton { .. } | Pose { .. } => unreachable!(),
@@ -840,7 +843,7 @@ impl<C: openxr_data::Compositor> Input<C> {
 }
 
 /// Returns a tuple of a parent action index and a path for its bindng
-fn handle_dpad_action(
+fn handle_dpad_binding(
     string_to_path: impl Fn(&str) -> Option<xr::Path>,
     parent_path: &str,
     action_set_name: &str,
@@ -1009,12 +1012,11 @@ fn get_dpad_parent(
             let dpad_activator_name = format!("xrizer-dpad-active{len}");
             let localized = format!("XRizer dpad active ({len})");
 
-            super::ActionData::Bool(super::BoolActionData {
-                action: action_set
+            super::ActionData::Bool(super::BoolActionData::new(
+                action_set
                     .create_action(&dpad_activator_name, &localized, &[])
                     .unwrap(),
-                dpad_data: None,
-            })
+            ))
         });
 
         let super::ActionData::Bool(super::BoolActionData { action, .. }) = action else {
@@ -1035,17 +1037,20 @@ fn get_dpad_parent(
     )
 }
 
-fn translate_warn(action: &str) -> impl FnOnce(&String) + '_ {
-    move |e| warn!("{e} ({action})")
+fn translate_warn(action: &str) -> impl FnOnce(&InvalidActionPath) + '_ {
+    move |e| warn!("{} ({action})", e.0)
 }
+
+struct InvalidActionPath(String);
 
 fn handle_sources(
     instance: &xr::Instance,
-    path_translator: impl Fn(&str) -> Result<String, String>,
+    path_translator: impl Fn(&str) -> Result<String, InvalidActionPath>,
     actions: &mut LoadedActionDataMap,
     action_set_name: &str,
     action_set: &xr::ActionSet,
     sources: &[ActionBinding],
+    hands: &[xr::Path],
 ) -> Vec<(String, xr::Path)> {
     let bindings = RefCell::new(Vec::new());
 
@@ -1125,10 +1130,10 @@ fn handle_sources(
                 else {
                     continue;
                 };
-                let data = handle_dpad_action(
+                let data = handle_dpad_binding(
                     |s| {
                         path_translator(s)
-                            .inspect_err(translate_warn("<dpad action>"))
+                            .inspect_err(translate_warn("<dpad binding>"))
                             .ok()
                             .map(|s| instance.string_to_path(&s).unwrap())
                     },
@@ -1219,19 +1224,57 @@ fn handle_sources(
                 ..
             } => {
                 let Ok(translated) =
-                    path_translator(&format!("{path}/grab")).inspect_err(translate_warn(output))
+                    path_translator(&[path, "/grab"].concat()).inspect_err(translate_warn(output))
                 else {
                     continue;
                 };
 
-                try_get_binding(
-                    output.to_string(),
-                    translated,
-                    action_match!(
-                        Bool(_) | Vector1 { .. },
-                        "Grab action should be a bool or float"
-                    ),
-                );
+                let mut actions = actions.borrow_mut();
+                if !find_action(&actions, output) {
+                    continue;
+                }
+
+                let name_only = output.rsplit_once('/').unwrap().1;
+                let grab_name = format!("{name_only}_grabaction");
+
+                let create_grab_action = |actions: &mut LoadedActionDataMap| {
+                    let localized = format!("{name_only} grab action");
+                    let grab_action = action_set
+                        .create_action(&grab_name, &localized, hands)
+                        .unwrap();
+
+                    actions.insert(
+                        grab_name.clone(),
+                        super::ActionData::Vector1(super::FloatActionData::new(
+                            grab_action.clone(),
+                        )),
+                    );
+
+                    super::GrabBindingData::new(grab_action)
+                };
+
+                let mut data = actions.remove(output).unwrap();
+                match &mut data {
+                    super::ActionData::Bool(data) => {
+                        if data.grab_data.is_none() {
+                            data.grab_data = Some(create_grab_action(&mut actions));
+                        }
+                    }
+                    super::ActionData::Vector1(data) => {
+                        if data.grab_data.is_none() {
+                            data.grab_data = Some(create_grab_action(&mut actions));
+                        }
+                    }
+                    _ => panic!("expected action {output} to be boolean or float"),
+                }
+
+                trace!("suggesting {translated} for {grab_name} (grab binding)");
+                bindings.borrow_mut().push((
+                    grab_name.clone(),
+                    instance.string_to_path(&translated).unwrap(),
+                ));
+
+                actions.insert(output.to_string(), data);
             }
             ActionBinding::Scroll { inputs, .. } => {
                 warn!("Got scroll binding for input {}, but these are currently unimplemented, skipping", inputs.scroll.output);
@@ -1299,7 +1342,7 @@ fn handle_skeleton_bindings(actions: &LoadedActionDataMap, bindings: &[SkeletonA
 
 fn handle_haptic_bindings(
     instance: &xr::Instance,
-    path_translator: impl Fn(&str) -> Result<String, String>,
+    path_translator: impl Fn(&str) -> Result<String, InvalidActionPath>,
     actions: &LoadedActionDataMap,
     bindings: &[SimpleActionBinding],
 ) -> Vec<(String, xr::Path)> {

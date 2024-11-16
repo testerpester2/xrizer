@@ -66,12 +66,7 @@ trait InterfaceImpl: Sync + Send + 'static {
 
 macro_rules! warn_unimplemented {
     ($function:literal) => {
-        crate::warn_once!(
-            "{} unimplemented ({}:{})",
-            $function,
-            file!(),
-            line!()
-        );
+        crate::warn_once!("{} unimplemented ({}:{})", $function, file!(), line!());
     };
 }
 use warn_unimplemented;
