@@ -805,7 +805,7 @@ impl<C: openxr_data::Compositor> Input<C> {
                 action_set_name,
                 set,
                 &bindings.sources,
-                &[
+                [
                     self.openxr.left_hand.subaction_path,
                     self.openxr.right_hand.subaction_path,
                 ],
@@ -1050,7 +1050,7 @@ fn handle_sources(
     action_set_name: &str,
     action_set: &xr::ActionSet,
     sources: &[ActionBinding],
-    hands: &[xr::Path],
+    hands: [xr::Path; 2],
 ) -> Vec<(String, xr::Path)> {
     let bindings = RefCell::new(Vec::new());
 
@@ -1223,8 +1223,16 @@ fn handle_sources(
                     },
                 ..
             } => {
-                let Ok(translated) =
-                    path_translator(&[path, "/grab"].concat()).inspect_err(translate_warn(output))
+                let Ok((translated_force, translated_value)) =
+                    path_translator(&[path, "/force"].concat())
+                        .inspect_err(translate_warn(output))
+                        .and_then(|f| {
+                            Ok((
+                                f,
+                                path_translator(&[path, "/value"].concat())
+                                    .inspect_err(translate_warn(output))?,
+                            ))
+                        })
                 else {
                     continue;
                 };
@@ -1235,22 +1243,33 @@ fn handle_sources(
                 }
 
                 let name_only = output.rsplit_once('/').unwrap().1;
-                let grab_name = format!("{name_only}_grabaction");
+                let force_name = format!("{name_only}_grabactionf");
+                let value_name = format!("{name_only}_grabactionv");
 
                 let create_grab_action = |actions: &mut LoadedActionDataMap| {
-                    let localized = format!("{name_only} grab action");
-                    let grab_action = action_set
-                        .create_action(&grab_name, &localized, hands)
+                    let localized = format!("{name_only} grab action (force)");
+                    let force_action = action_set
+                        .create_action(&force_name, &localized, &hands)
+                        .unwrap();
+                    let localizedv = format!("{name_only} grab action (value)");
+                    let value_action = action_set
+                        .create_action(&value_name, &localizedv, &hands)
                         .unwrap();
 
                     actions.insert(
-                        grab_name.clone(),
+                        force_name.clone(),
                         super::ActionData::Vector1(super::FloatActionData::new(
-                            grab_action.clone(),
+                            force_action.clone(),
+                        )),
+                    );
+                    actions.insert(
+                        value_name.clone(),
+                        super::ActionData::Vector1(super::FloatActionData::new(
+                            value_action.clone(),
                         )),
                     );
 
-                    super::GrabBindingData::new(grab_action)
+                    super::GrabBindingData::new(force_action, value_action, hands)
                 };
 
                 let mut data = actions.remove(output).unwrap();
@@ -1268,10 +1287,14 @@ fn handle_sources(
                     _ => panic!("expected action {output} to be boolean or float"),
                 }
 
-                trace!("suggesting {translated} for {grab_name} (grab binding)");
+                trace!("suggesting {translated_force} and {translated_value} for {force_name} (grab binding)");
                 bindings.borrow_mut().push((
-                    grab_name.clone(),
-                    instance.string_to_path(&translated).unwrap(),
+                    force_name.clone(),
+                    instance.string_to_path(&translated_force).unwrap(),
+                ));
+                bindings.borrow_mut().push((
+                    value_name.clone(),
+                    instance.string_to_path(&translated_value).unwrap(),
                 ));
 
                 actions.insert(output.to_string(), data);

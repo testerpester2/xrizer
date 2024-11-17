@@ -110,7 +110,7 @@ impl InteractionProfile for Knuckles {
 #[cfg(test)]
 mod tests {
     use super::{xr, InteractionProfile, Knuckles};
-    use crate::input::tests::Fixture;
+    use crate::input::{tests::Fixture, ActionData};
 
     #[test]
     fn verify_bindings() {
@@ -140,6 +140,20 @@ mod tests {
                 "/user/hand/right/input/trackpad/force".into(),
             ],
         );
+
+        let handle = f.get_action_handle(c"/actions/set1/in/boolact");
+        let data = f.input.openxr.session_data.get();
+        let actions = data.input_data.get_loaded_actions().unwrap();
+        let action = actions.try_get_action(handle).unwrap();
+
+        let ActionData::Bool(a) = action else {
+            panic!("no");
+        };
+
+        let grab_data = a.grab_data.as_ref().unwrap();
+        let p = f.input.openxr.instance.string_to_path(path).unwrap();
+        let suggested = fakexr::get_suggested_bindings(grab_data.force_action.as_raw(), p);
+        assert!(suggested.contains(&"/user/hand/right/input/squeeze/force".to_string()));
 
         f.verify_bindings::<f32>(
             path,

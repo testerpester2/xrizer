@@ -156,9 +156,9 @@ impl BoolActionData {
         // First, we try the normal boolean action
         // We may have dpad data, but some controller types may not have been bound to dpad inputs,
         // so we need to try the regular action first.
-        let state = self.action.state(session, subaction_path)?;
+        let mut state = self.action.state(session, subaction_path)?;
 
-        if state.is_active {
+        if state.is_active && state.current_state {
             return Ok(state);
         }
 
@@ -166,8 +166,11 @@ impl BoolActionData {
         // our dpad input, if available.
 
         if let Some(data) = &self.dpad_data {
-            if let Some(state) = data.state(session)? {
-                return Ok(state);
+            if let Some(s) = data.state(session)? {
+                state = s;
+                if s.current_state {
+                    return Ok(s);
+                }
             }
         }
 
@@ -206,8 +209,10 @@ impl FloatActionData {
             return Ok(state);
         }
 
-        if let Some(_) = &self.grab_data {
-            todo!("handle grab data");
+        if let Some(data) = &self.grab_data {
+            if data.grabbed(session, subaction_path)?.is_some() {
+                todo!("handle grab bindings for float actions");
+            }
         }
 
         Ok(state)
@@ -287,41 +292,81 @@ impl DpadData {
 }
 
 struct GrabBindingData {
-    action: xr::Action<f32>,
-    last_state: AtomicBool,
+    force_action: xr::Action<f32>,
+    value_action: xr::Action<f32>,
+    last_state: [(xr::Path, AtomicBool); 2],
 }
 
 impl GrabBindingData {
-    fn new(action: xr::Action<f32>) -> Self {
+    fn new(force: xr::Action<f32>, value: xr::Action<f32>, paths: [xr::Path; 2]) -> Self {
+        assert!(paths.iter().copied().all(|p| p != xr::Path::NULL));
         Self {
-            action,
-            last_state: false.into(),
+            force_action: force,
+            value_action: value,
+            last_state: paths.map(|p| (p, false.into())),
         }
     }
 
-    const THRESHOLD: f32 = 0.3;
-    // Returns None if the grab data is not active.
+    // These values were determined empirically.
+
+    /// How much force to apply to begin a grab
+    const GRAB_THRESHOLD: f32 = 0.10;
+    /// How much the value component needs to be to release the grab.
+    const RELEASE_THRESHOLD: f32 = 0.35;
+
+    /// Returns None if the grab data is not active.
     fn grabbed<G>(
         &self,
         session: &xr::Session<G>,
         subaction_path: xr::Path,
     ) -> xr::Result<Option<xr::ActionState<bool>>> {
-        let state = self.action.state(session, subaction_path)?;
-        if !state.is_active {
+        // FIXME: the way this function calculates changed_since_last_sync is incorrect, as it will
+        // always be false if this is called more than once between syncs. What should be done is
+        // the state should be updated in UpdateActionState, but that may have other implications
+        // I currently don't feel like thinking about, as this works and I haven't seen games grab action
+        // state more than once beteween syncs.
+        let force_state = self.force_action.state(session, subaction_path)?;
+        let value_state = self.value_action.state(session, subaction_path)?;
+        if !force_state.is_active || !value_state.is_active {
             Ok(None)
         } else {
-            let value = state.current_state >= Self::THRESHOLD;
-            let changed_since_last_sync = self
-                .last_state
-                .compare_exchange(!value, value, Ordering::Relaxed, Ordering::Relaxed)
-                .is_ok();
-            println!("{changed_since_last_sync}");
+            let (grabbed, changed_since_last_sync) = match &self.last_state {
+                [(path, old_state), _] | [_, (path, old_state)] if *path == subaction_path => {
+                    let s = old_state.load(Ordering::Relaxed);
+                    let grabbed = (!s && force_state.current_state >= Self::GRAB_THRESHOLD)
+                        || (s && value_state.current_state > Self::RELEASE_THRESHOLD);
+                    let changed = old_state
+                        .compare_exchange(!grabbed, grabbed, Ordering::Relaxed, Ordering::Relaxed)
+                        .is_ok();
+                    (grabbed, changed)
+                }
+                [(_, old_state1), (_, old_state2)] if subaction_path == xr::Path::NULL => {
+                    let s =
+                        old_state1.load(Ordering::Relaxed) || old_state2.load(Ordering::Relaxed);
+                    let grabbed = (!s && force_state.current_state >= Self::GRAB_THRESHOLD)
+                        || (s && value_state.current_state > Self::RELEASE_THRESHOLD);
+                    let cmpex = |state: &AtomicBool| {
+                        state
+                            .compare_exchange(
+                                !grabbed,
+                                grabbed,
+                                Ordering::Relaxed,
+                                Ordering::Relaxed,
+                            )
+                            .is_ok()
+                    };
+                    let changed1 = cmpex(old_state1);
+                    let changed2 = cmpex(old_state2);
+                    (grabbed, changed1 || changed2)
+                }
+                _ => unreachable!(),
+            };
 
             Ok(Some(xr::ActionState {
-                current_state: value,
+                current_state: grabbed,
                 changed_since_last_sync,
-                last_change_time: state.last_change_time,
-                is_active: state.is_active,
+                last_change_time: force_state.last_change_time,
+                is_active: true,
             }))
         }
     }

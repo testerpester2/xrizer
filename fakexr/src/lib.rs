@@ -20,11 +20,22 @@ pub enum ActionState {
     Haptic,
 }
 
-pub fn set_action_state(action: xr::Action, state: ActionState) {
+pub fn set_action_state(action: xr::Action, state: ActionState, hand: UserPath) {
     let action = action.to_handle().unwrap();
-    let s = action.state.load();
-    assert_eq!(std::mem::discriminant(&state), std::mem::discriminant(&s));
-    action.pending_state.store(Some(state));
+    assert_eq!(
+        std::mem::discriminant(&state),
+        std::mem::discriminant(&action.state.left.load().state)
+    );
+    let mut d = action.pending_state.take();
+    match hand {
+        UserPath::RightHand => {
+            d.right = Some(state);
+        }
+        UserPath::LeftHand => {
+            d.left = Some(state);
+        }
+    }
+    action.pending_state.store(d);
     action.active.store(true, Ordering::Relaxed);
 }
 
@@ -33,7 +44,7 @@ pub fn deactivate_action(action: xr::Action) {
     action.active.store(false, Ordering::Relaxed);
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, PartialEq)]
 pub enum UserPath {
     /// /user/hand/left
     LeftHand,
@@ -513,10 +524,30 @@ struct Action {
     name: CString,
     active: AtomicBool,
     localized_name: CString,
-    state: AtomicCell<ActionState>,
-    changed: AtomicBool,
-    pending_state: AtomicCell<Option<ActionState>>,
+    state: LeftRight<AtomicCell<ActionStateData>>,
+    pending_state: AtomicCell<LeftRight<Option<ActionState>>>,
     suggested: Mutex<HashMap<xr::Path, Vec<xr::Path>>>,
+}
+
+impl Action {
+    fn get_hand_state(&self, instance: &Instance, path: xr::Path) -> ActionStateData {
+        match instance.get_user_path(path).unwrap() {
+            None | Some(UserPath::LeftHand) => self.state.left.load(),
+            Some(UserPath::RightHand) => self.state.right.load(),
+        }
+    }
+}
+
+#[derive(Default)]
+struct LeftRight<T> {
+    left: T,
+    right: T,
+}
+
+#[derive(Copy, Clone, PartialEq)]
+struct ActionStateData {
+    state: ActionState,
+    changed: bool,
 }
 
 impl_handle!(Instance, xr::Instance);
@@ -685,11 +716,22 @@ extern "system" fn create_action(
         }
     }
 
+    let state = match info.action_type {
+        xr::ActionType::BOOLEAN_INPUT => ActionState::Bool(false),
+        xr::ActionType::POSE_INPUT => ActionState::Pose,
+        xr::ActionType::FLOAT_INPUT => ActionState::Float(0.0),
+        xr::ActionType::VECTOR2F_INPUT => ActionState::Vector2(0.0, 0.0),
+        xr::ActionType::VIBRATION_OUTPUT => ActionState::Haptic,
+        other => unimplemented!("unhandled action type: {other:?}"),
+    };
+    let data = ActionStateData {
+        state,
+        changed: false,
+    };
     let a = Arc::new(Action {
         instance: set.instance.clone(),
         active: false.into(),
         name: name.to_owned(),
-        changed: false.into(),
         localized_name: CStr::from_bytes_until_nul(unsafe {
             std::slice::from_raw_parts(
                 info.localized_action_name.as_ptr() as _,
@@ -698,16 +740,11 @@ extern "system" fn create_action(
         })
         .unwrap()
         .to_owned(),
-        state: match info.action_type {
-            xr::ActionType::BOOLEAN_INPUT => ActionState::Bool(false),
-            xr::ActionType::POSE_INPUT => ActionState::Pose,
-            xr::ActionType::FLOAT_INPUT => ActionState::Float(0.0),
-            xr::ActionType::VECTOR2F_INPUT => ActionState::Vector2(0.0, 0.0),
-            xr::ActionType::VIBRATION_OUTPUT => ActionState::Haptic,
-            other => unimplemented!("unhandled action type: {other:?}"),
-        }
-        .into(),
-        pending_state: None.into(),
+        state: LeftRight {
+            left: data.into(),
+            right: data.into(),
+        },
+        pending_state: Default::default(),
         suggested: Mutex::default(),
     });
 
@@ -730,7 +767,7 @@ extern "system" fn create_action_space(
     let session = get_handle!(session);
     let info = unsafe { info.as_ref() }.unwrap();
     let action = get_handle!(info.action);
-    if !matches!(action.state.load(), ActionState::Pose) {
+    if !matches!(action.state.left.load().state, ActionState::Pose) {
         return xr::Result::ERROR_ACTION_TYPE_MISMATCH;
     }
 
@@ -977,17 +1014,24 @@ extern "system" fn sync_actions(
         set.active.store(true, Ordering::Relaxed);
 
         for action in actions {
-            match action.pending_state.take() {
-                Some(new_state) => {
-                    let old_state = action.state.load();
-                    if old_state != new_state {
-                        action.changed.store(true, Ordering::Relaxed);
-                        action.state.store(new_state);
+            let data = action.pending_state.take();
+            for (new, state) in [
+                (data.left, &action.state.left),
+                (data.right, &action.state.right),
+            ] {
+                let mut d = state.load();
+                match new {
+                    Some(new_state) => {
+                        if d.state != new_state {
+                            d.changed = true;
+                            d.state = new_state;
+                        }
+                    }
+                    None => {
+                        d.changed = false;
                     }
                 }
-                None => {
-                    action.changed.store(false, Ordering::Relaxed);
-                }
+                state.store(d);
             }
         }
     }
@@ -1031,7 +1075,10 @@ extern "system" fn get_action_state_boolean(
         return xr::Result::ERROR_ACTIONSET_NOT_ATTACHED;
     };
 
-    let ActionState::Bool(b) = action.state.load() else {
+    let info = unsafe { info.as_ref().unwrap() };
+    let instance = session.instance.upgrade().unwrap();
+    let hand_state = action.get_hand_state(&instance, info.subaction_path);
+    let ActionState::Bool(b) = hand_state.state else {
         return xr::Result::ERROR_ACTION_TYPE_MISMATCH;
     };
     let state = unsafe { state.as_mut().unwrap() };
@@ -1039,7 +1086,7 @@ extern "system" fn get_action_state_boolean(
         let active = action.active.load(Ordering::Relaxed);
         if active {
             state.current_state = b.into();
-            state.changed_since_last_sync = action.changed.load(Ordering::Relaxed).into();
+            state.changed_since_last_sync = hand_state.changed.into();
         }
         state.is_active = active.into();
     }
@@ -1065,8 +1112,9 @@ extern "system" fn get_action_state_float(
     let Some((set, action)) = get_action_if_attached(&session, info) else {
         return xr::Result::ERROR_ACTIONSET_NOT_ATTACHED;
     };
-
-    let ActionState::Float(f) = action.state.load() else {
+    let instance = session.instance.upgrade().unwrap();
+    let hand_state = action.get_hand_state(&instance, unsafe { (*info).subaction_path });
+    let ActionState::Float(f) = hand_state.state else {
         return xr::Result::ERROR_ACTION_TYPE_MISMATCH;
     };
     let state = unsafe { state.as_mut().unwrap() };
@@ -1100,7 +1148,9 @@ extern "system" fn get_action_state_vector2f(
         return xr::Result::ERROR_ACTIONSET_NOT_ATTACHED;
     };
 
-    let ActionState::Vector2(x, y) = action.state.load() else {
+    let instance = session.instance.upgrade().unwrap();
+    let hand_state = action.get_hand_state(&instance, unsafe { (*info).subaction_path });
+    let ActionState::Vector2(x, y) = hand_state.state else {
         return xr::Result::ERROR_ACTION_TYPE_MISMATCH;
     };
     let state = unsafe { state.as_mut().unwrap() };
