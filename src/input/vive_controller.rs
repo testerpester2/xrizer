@@ -87,6 +87,7 @@ impl InteractionProfile for ViveWands {
         both!(&actions.trigger, "input/trigger/value");
         both!(&actions.trigger_click, "input/trigger/click");
         both!(&actions.app_menu, "input/menu/click");
+        both!(&actions.squeeze, "input/squeeze/click");
 
         ret
     }

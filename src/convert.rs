@@ -66,7 +66,7 @@ impl From<Vec3> for vr::HmdVector3_t {
 
 impl From<Vec3> for vr::HmdVector4_t {
     fn from(value: Vec3) -> Self {
-        let mut v = <[f32; 4]>::default();
+        let mut v = [0.0; 4];
         v[..3].copy_from_slice(&value.to_array());
         v[3] = 1.0;
         Self { v }

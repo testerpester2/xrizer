@@ -715,7 +715,22 @@ impl<C: openxr_data::Compositor> Input<C> {
                 };
             }
             match controller_type {
-                ControllerType::ViveController => load_bindings!(ViveWands),
+                ControllerType::ViveController => {
+                    if let Some(bindings) = load_bindings() {
+                        self.load_bindings_for_profile::<ViveWands>(
+                            action_sets,
+                            actions,
+                            legacy_actions,
+                            &bindings,
+                        );
+                        self.load_bindings_for_profile::<super::simple_controller::SimpleController>(
+                            action_sets,
+                            actions,
+                            legacy_actions,
+                            &bindings,
+                        );
+                    }
+                }
                 ControllerType::Knuckles => load_bindings!(Knuckles),
                 ControllerType::Unknown(ref other) => {
                     warn!("Ignoring bindings for unknown profile {other}")

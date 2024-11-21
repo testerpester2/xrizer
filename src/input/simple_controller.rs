@@ -53,6 +53,7 @@ impl InteractionProfile for SimpleController {
         both!(&actions.trigger, "input/select/click");
         both!(&actions.trigger_click, "input/select/click");
         both!(&actions.app_menu, "input/menu/click");
+        both!(&actions.squeeze, "input/menu/click");
 
         ret
     }
