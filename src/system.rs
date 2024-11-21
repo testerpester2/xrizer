@@ -5,7 +5,7 @@ use crate::{
     vr,
 };
 use glam::{Mat3, Quat, Vec3};
-use log::debug;
+use log::{debug, warn};
 use openxr as xr;
 use std::ffi::CStr;
 use std::sync::{
@@ -230,9 +230,56 @@ impl vr::IVRSystem022_Interface for System {
             .force(|_| Input::new(self.openxr.clone()))
             .get_legacy_controller_state(device_index, state, state_size)
     }
-    fn GetHiddenAreaMesh(&self, _: vr::EVREye, _: vr::EHiddenAreaMeshType) -> vr::HiddenAreaMesh_t {
-        crate::warn_unimplemented!("GetHiddenAreaMesh");
-        vr::HiddenAreaMesh_t::default()
+    fn GetHiddenAreaMesh(
+        &self,
+        eye: vr::EVREye,
+        ty: vr::EHiddenAreaMeshType,
+    ) -> vr::HiddenAreaMesh_t {
+        if !self.openxr.enabled_extensions.khr_visibility_mask {
+            return Default::default();
+        }
+
+        let mask_ty = match ty {
+            vr::EHiddenAreaMeshType::Standard => xr::VisibilityMaskTypeKHR::HIDDEN_TRIANGLE_MESH,
+            vr::EHiddenAreaMeshType::Inverse => xr::VisibilityMaskTypeKHR::VISIBLE_TRIANGLE_MESH,
+            vr::EHiddenAreaMeshType::LineLoop => xr::VisibilityMaskTypeKHR::LINE_LOOP,
+            vr::EHiddenAreaMeshType::Max => {
+                warn!("Unexpectedly got EHiddenAreaMeshType::Max - returning default area mesh");
+                return Default::default();
+            }
+        };
+
+        let session_data = self.openxr.session_data.get();
+        let mask = session_data
+            .session
+            .get_visibility_mask_khr(
+                xr::ViewConfigurationType::PRIMARY_STEREO,
+                eye as u32,
+                mask_ty,
+            )
+            .unwrap();
+
+        // convert from indices + vertices to just vertices
+        let vertices: Vec<_> = mask
+            .indices
+            .into_iter()
+            .map(|i| {
+                let v = mask.vertices[i as usize];
+                vr::HmdVector2_t { v: [v.x, v.y] }
+            })
+            .collect();
+
+        let count = vertices.len();
+        // XXX: what are we supposed to do here? pVertexData is a random pointer and there's no
+        // clear way for the application to deallocate it
+        // fortunately it seems like applications don't call this often, so this leakage isn't a
+        // huge deal.
+        let vertices = Vec::leak(vertices).as_ptr();
+
+        vr::HiddenAreaMesh_t {
+            pVertexData: vertices,
+            unTriangleCount: count as u32 / 3,
+        }
     }
     fn GetEventTypeNameFromEnum(&self, _: vr::EVREventType) -> *const std::os::raw::c_char {
         todo!()

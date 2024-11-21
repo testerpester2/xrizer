@@ -32,6 +32,7 @@ pub struct OpenXrData<C: Compositor> {
     pub display_time: AtomicXrTime,
     pub left_hand: HandInfo,
     pub right_hand: HandInfo,
+    pub enabled_extensions: xr::ExtensionSet,
 
     /// should only be externally accessed for testing
     pub(crate) input: Injected<crate::input::Input<C>>,
@@ -76,6 +77,7 @@ impl<C: Compositor> OpenXrData<C> {
         let mut exts = xr::ExtensionSet::default();
         exts.khr_vulkan_enable = supported_exts.khr_vulkan_enable;
         exts.ext_hand_tracking = supported_exts.ext_hand_tracking;
+        exts.khr_visibility_mask = supported_exts.khr_visibility_mask;
 
         let instance = entry
             .create_instance(
@@ -114,6 +116,7 @@ impl<C: Compositor> OpenXrData<C> {
             display_time: AtomicXrTime(1.into()),
             left_hand,
             right_hand,
+            enabled_extensions: exts,
             input: injector.inject(),
             compositor: injector.inject(),
         })
