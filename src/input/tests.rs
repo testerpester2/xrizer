@@ -987,3 +987,33 @@ fn pose_action_no_restrict() {
         compare_pose(expected, actual);
     }
 }
+
+#[test]
+fn cased_actions() {
+    let f = Fixture::new();
+    let set1 = f.get_action_set_handle(c"/actions/set1");
+    // TODO: do the rest of the action types?
+    let boolact = f.get_action_handle(c"/actions/set1/in/BoolAct");
+    f.load_actions(c"actions_cased.json");
+
+    f.verify_bindings::<bool>(
+        ViveWands::PROFILE_PATH,
+        c"/actions/set1/in/BoolAct",
+        ["/user/hand/left/input/squeeze/click".into()],
+    );
+
+    fakexr::set_action_state(
+        f.get_action::<bool>(boolact),
+        fakexr::ActionState::Bool(true),
+        LeftHand,
+    );
+    f.sync(vr::VRActiveActionSet_t {
+        ulActionSet: set1,
+        ..Default::default()
+    });
+
+    let state = f.get_bool_state(boolact).unwrap();
+    assert!(state.bActive);
+    assert!(state.bState);
+    assert!(state.bChanged);
+}

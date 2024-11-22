@@ -274,12 +274,14 @@ fn load_actions(
     right_hand: xr::Path,
 ) -> Result<HashMap<String, super::ActionData>, vr::EVRInputError> {
     let mut ret = HashMap::with_capacity(actions.len());
+    let mut long_name_idx = 0;
     for action in actions {
         fn create_action<T: xr::ActionTy>(
             data: &ActionDataCommon,
             sets: &HashMap<String, xr::ActionSet>,
             english: Option<&Localization>,
             paths: &[xr::Path],
+            long_name_idx: &mut usize,
         ) -> xr::Result<xr::Action<T>> {
             let localized = english
                 .and_then(|e| e.localized_names.get(&data.name))
@@ -289,7 +291,15 @@ fn load_actions(
             let set_end_idx = path.match_indices('/').nth(2).unwrap().0;
             let set_name = &path[0..set_end_idx];
             let set = &sets[set_name];
-            let xr_friendly_name = path.rsplit_once('/').unwrap().1.replace([' ', ','], "_");
+            let mut xr_friendly_name = path.rsplit_once('/').unwrap().1.replace([' ', ','], "_");
+            if xr_friendly_name.len() > xr::sys::MAX_ACTION_NAME_SIZE {
+                let idx_str = ["_ln", &long_name_idx.to_string()].concat();
+                xr_friendly_name.replace_range(
+                    xr::sys::MAX_ACTION_NAME_SIZE - idx_str.len() - 1..,
+                    &idx_str,
+                );
+                *long_name_idx += 1;
+            }
             let localized = localized.unwrap_or(&xr_friendly_name);
             trace!(
                 "Creating action {xr_friendly_name} (localized: {localized}) in set {set_name:?}"
@@ -310,7 +320,7 @@ fn load_actions(
         let paths = &[left_hand, right_hand];
         macro_rules! create_action {
             ($ty:ty, $data:expr) => {
-                create_action::<$ty>(&$data, sets, english, paths).unwrap()
+                create_action::<$ty>(&$data, sets, english, paths, &mut long_name_idx).unwrap()
             };
         }
         use super::ActionData::*;
@@ -444,8 +454,13 @@ fn path_to_skeleton<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Hand, D::E
     }
 }
 
+fn to_lowercase<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    <&str>::deserialize(d).map(|s| s.to_ascii_lowercase())
+}
+
 #[derive(Deserialize, Debug)]
 struct ActionBindingOutput {
+    #[serde(deserialize_with = "to_lowercase")]
     output: String,
 }
 
@@ -1437,7 +1452,7 @@ fn handle_pose_bindings(
             Hand::Left => &mut bound.left,
             Hand::Right => &mut bound.right,
         };
-        assert!(b.replace(*pose_ty).is_none());
+        *b = Some(*pose_ty);
         trace!("bound {:?} to pose {output} for hand {hand:?}", *pose_ty);
     }
 }
