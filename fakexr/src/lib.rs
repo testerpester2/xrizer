@@ -388,11 +388,20 @@ impl Instance {
     }
 }
 
-#[derive(Default)]
 struct HandData {
     profile: AtomicCell<xr::Path>,
     grip_pose: AtomicCell<xr::Posef>,
     aim_pose: AtomicCell<xr::Posef>,
+}
+
+impl Default for HandData {
+    fn default() -> Self {
+        Self {
+            profile: Default::default(),
+            grip_pose: xr::Posef::IDENTITY.into(),
+            aim_pose: xr::Posef::IDENTITY.into(),
+        }
+    }
 }
 
 struct Session {

@@ -150,7 +150,10 @@ impl<C: Compositor> OpenXrData<C> {
                             }
                         };
 
-                        info!("{} interaction profile changed: {}", info.s, profile);
+                        info!(
+                            "{} interaction profile changed: {}",
+                            info.path_name, profile
+                        );
                     }
                 }
                 _ => {
@@ -444,7 +447,7 @@ impl AtomicPath {
 }
 
 pub struct HandInfo {
-    s: &'static str,
+    path_name: &'static str,
     connected: AtomicBool,
     pub subaction_path: xr::Path,
     pub interaction_profile: AtomicPath,
@@ -456,11 +459,11 @@ impl HandInfo {
         self.connected.load(Ordering::Relaxed)
     }
 
-    fn new(instance: &xr::Instance, path: &'static str) -> Self {
+    fn new(instance: &xr::Instance, path_name: &'static str) -> Self {
         Self {
-            s: path,
+            path_name,
             connected: false.into(),
-            subaction_path: instance.string_to_path(path).unwrap(),
+            subaction_path: instance.string_to_path(path_name).unwrap(),
             interaction_profile: AtomicPath(0.into()),
         }
     }

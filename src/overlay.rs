@@ -260,7 +260,8 @@ impl vr::IVROverlay027_Interface for OverlayMan {
         todo!()
     }
     fn HideOverlay(&self, ulOverlayHandle: vr::VROverlayHandle_t) -> vr::EVROverlayError {
-        todo!()
+        crate::warn_unimplemented!("HideOverlay");
+        vr::EVROverlayError::None
     }
     fn ShowOverlay(&self, ulOverlayHandle: vr::VROverlayHandle_t) -> vr::EVROverlayError {
         crate::warn_unimplemented!("ShowOverlay");
@@ -563,7 +564,8 @@ impl vr::IVROverlay027_Interface for OverlayMan {
         pchOverlayName: *const std::os::raw::c_char,
         pOverlayHandle: *mut vr::VROverlayHandle_t,
     ) -> vr::EVROverlayError {
-        todo!()
+        crate::warn_unimplemented!("CreateOverlay");
+        vr::EVROverlayError::None
     }
     fn FindOverlay(
         &self,

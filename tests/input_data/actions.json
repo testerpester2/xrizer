@@ -31,6 +31,16 @@
 			"type": "pose"
 		},
 		{
+			"name": "/actions/set1/in/PoseL",
+			"requirement": "optional",
+			"type": "pose"
+		},
+		{
+			"name": "/actions/set1/in/PoseR",
+			"requirement": "optional",
+			"type": "pose"
+		},
+		{
 			"name": "/actions/set1/in/SkellyL",
 			"type": "skeleton",
 			"skeleton": "/skeleton/hand/left",

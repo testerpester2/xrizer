@@ -1,4 +1,6 @@
-use super::{knuckles::Knuckles, ActionData, Input, InteractionProfile};
+use super::{
+    knuckles::Knuckles, vive_controller::ViveWands, ActionData, Input, InteractionProfile,
+};
 use crate::{
     openxr_data::OpenXrData,
     vr::{self, IVRInput010_Interface},
@@ -198,6 +200,27 @@ impl Fixture {
             .expect("Couldn't find action for handle");
 
         T::get_xr_action(action).expect("Couldn't get OpenXR handle for action")
+    }
+
+    fn get_pose(
+        &self,
+        handle: vr::VRActionHandle_t,
+        restrict: vr::VRInputValueHandle_t,
+    ) -> Result<vr::InputPoseActionData_t, vr::EVRInputError> {
+        let mut state = Default::default();
+        let err = self.input.GetPoseActionDataForNextFrame(
+            handle,
+            vr::ETrackingUniverseOrigin::Seated,
+            &mut state,
+            std::mem::size_of_val(&state) as u32,
+            restrict,
+        );
+
+        if err != vr::EVRInputError::None {
+            Err(err)
+        } else {
+            Ok(state)
+        }
     }
 
     fn get_bool_state(
@@ -625,17 +648,7 @@ fn raw_pose_is_grip_at_aim() {
 
     fakexr::set_aim(f.raw_session(), LeftHand, aim);
 
-    let mut data = Default::default();
-    assert_eq!(
-        f.input.GetPoseActionDataForNextFrame(
-            pose_handle,
-            vr::ETrackingUniverseOrigin::Seated,
-            &mut data,
-            std::mem::size_of_val(&data) as u32,
-            left_hand,
-        ),
-        vr::EVRInputError::None
-    );
+    let data = f.get_pose(pose_handle, left_hand).unwrap();
 
     assert_eq!(data.bActive, true);
     assert_eq!(data.activeOrigin, left_hand);
@@ -739,15 +752,8 @@ fn dpad_input_use_non_dpad_when_available() {
     f.load_actions(c"actions_dpad_mixed.json");
     f.input.openxr.restart_session();
 
-    let data = f.input.openxr.session_data.get();
-    let actions = data.input_data.get_loaded_actions().unwrap();
-    let super::ActionData::Bool(super::BoolActionData { dpad_data, .. }) =
-        actions.try_get_action(boolact).unwrap()
-    else {
-        panic!("should be bool action");
-    };
+    get_dpad_action!(f, boolact, _dpad);
 
-    assert!(dpad_data.is_some());
     f.sync(vr::VRActiveActionSet_t {
         ulActionSet: set1,
         ..Default::default()
@@ -884,4 +890,100 @@ fn grab_per_hand() {
 
     value_state_check(0.0, release, LeftHand, false, true, line!());
     value_state_check(0.0, 1.0, RightHand, true, false, line!());
+}
+
+#[test]
+fn actions_with_bad_paths() {
+    let f = Fixture::new();
+    let spaces = f.get_action_handle(c"/actions/set1/in/action with spaces");
+    let commas = f.get_action_handle(c"/actions/set1/in/action,with,commas");
+    let mixed = f.get_action_handle(c"/actions/set1/in/mixed, action");
+    let set1 = f.get_action_set_handle(c"/actions/set1");
+    f.load_actions(c"actions_malformed_paths.json");
+
+    fakexr::set_action_state(
+        f.get_action::<bool>(spaces),
+        fakexr::ActionState::Bool(true),
+        LeftHand,
+    );
+    fakexr::set_action_state(
+        f.get_action::<f32>(commas),
+        fakexr::ActionState::Float(0.5),
+        LeftHand,
+    );
+    fakexr::set_action_state(
+        f.get_action::<bool>(mixed),
+        fakexr::ActionState::Bool(true),
+        LeftHand,
+    );
+    f.sync(vr::VRActiveActionSet_t {
+        ulActionSet: set1,
+        ..Default::default()
+    });
+
+    let s = f.get_bool_state(spaces).unwrap();
+    assert_eq!(s.bActive, true);
+    assert_eq!(s.bState, true);
+    assert_eq!(s.bChanged, true);
+
+    let s = f.get_bool_state(mixed).unwrap();
+    assert_eq!(s.bActive, true);
+    assert_eq!(s.bState, true);
+    assert_eq!(s.bChanged, true);
+
+    let mut s = vr::InputAnalogActionData_t::default();
+    let ret = f
+        .input
+        .GetAnalogActionData(commas, &mut s, std::mem::size_of_val(&s) as u32, 0);
+    assert_eq!(ret, vr::EVRInputError::None);
+
+    assert_eq!(s.bActive, true);
+    assert_eq!(s.x, 0.5);
+}
+
+#[test]
+fn pose_action_no_restrict() {
+    let f = Fixture::new();
+
+    let set1 = f.get_action_set_handle(c"/actions/set1");
+    let posel = f.get_action_handle(c"/actions/set1/in/posel");
+    let poser = f.get_action_handle(c"/actions/set1/in/poser");
+
+    f.load_actions(c"actions.json");
+    f.set_interaction_profile::<ViveWands>(LeftHand);
+    f.set_interaction_profile::<ViveWands>(RightHand);
+    let session = f.input.openxr.session_data.get().session.as_raw();
+    let pose_left = xr::Posef {
+        position: xr::Vector3f {
+            x: 0.5,
+            y: 0.5,
+            z: 0.5,
+        },
+        orientation: xr::Quaternionf::IDENTITY,
+    };
+    fakexr::set_aim(session, LeftHand, pose_left);
+
+    let pose_right = xr::Posef {
+        position: xr::Vector3f {
+            x: 0.6,
+            y: 0.6,
+            z: 0.6,
+        },
+        orientation: xr::Quaternionf::IDENTITY,
+    };
+    fakexr::set_aim(session, RightHand, pose_right);
+
+    f.sync(vr::VRActiveActionSet_t {
+        ulActionSet: set1,
+        ..Default::default()
+    });
+
+    for (handle, expected) in [(posel, pose_left), (poser, pose_right)] {
+        let actual = f.get_pose(handle, 0).unwrap();
+        assert!(actual.bActive);
+        let p = actual.pose;
+        assert!(p.bPoseIsValid);
+        let actual = hmdmatrix34_to_pose(p.mDeviceToAbsoluteTracking);
+        compare_pose(expected, actual);
+    }
 }

@@ -735,9 +735,15 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
         );
 
         if log::log_enabled!(log::Level::Trace) {
-            let map = self.action_map.read().unwrap();
-            let key = ActionKey::from(KeyData::from_ffi(action));
-            trace!("getting pose for {}", map[key].path);
+            let action_map = self.action_map.read().unwrap();
+            let action_key = ActionKey::from(KeyData::from_ffi(action));
+            let input_map = self.input_source_map.read().unwrap();
+            let input_key = InputSourceKey::from(KeyData::from_ffi(restrict_to_device));
+            trace!(
+                "getting pose for {:?} (restrict: {:?})",
+                action_map.get(action_key).map(|a| &a.path),
+                input_map.get(input_key)
+            );
         }
 
         let data = self.openxr.session_data.get();
@@ -756,38 +762,69 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
         let subaction_path = get_subaction_path!(self, restrict_to_device, action_data);
         let (active_origin, hand) = match loaded.try_get_action(action) {
             Ok(ActionData::Pose { bindings }) => {
-                let (hand, hand_info, active_origin) = match subaction_path {
+                let (mut hand, interaction_profile) = match subaction_path {
                     x if x == self.openxr.left_hand.subaction_path => (
-                        Hand::Left,
-                        &self.openxr.left_hand,
-                        self.left_hand_key.data().as_ffi(),
+                        Some(Hand::Left),
+                        Some(self.openxr.left_hand.interaction_profile.load()),
                     ),
                     x if x == self.openxr.right_hand.subaction_path => (
-                        Hand::Right,
-                        &self.openxr.right_hand,
-                        self.right_hand_key.data().as_ffi(),
+                        Some(Hand::Right),
+                        Some(self.openxr.right_hand.interaction_profile.load()),
                     ),
+                    x if x == xr::Path::NULL => (None, None),
                     _ => unreachable!(),
                 };
-                let Some(bound) = bindings.get(&hand_info.interaction_profile.load()) else {
-                    trace!(
-                        "action has no bindings for the interaction profile {:?}",
-                        hand_info.interaction_profile.load()
-                    );
+
+                let get_first_bound_hand_profile = || {
+                    bindings
+                        .get(&self.openxr.left_hand.interaction_profile.load())
+                        .or_else(|| {
+                            bindings.get(&self.openxr.right_hand.interaction_profile.load())
+                        })
+                };
+
+                let Some(bound) = interaction_profile
+                    .and_then(|p| bindings.get(&p))
+                    .or_else(get_first_bound_hand_profile)
+                else {
+                    match hand {
+                        Some(hand) => {
+                            trace!("action has no bindings for the {hand:?} hand's interaction profile");
+                        }
+                        None => {
+                            trace!("action has no bindings for either hand's interaction profile");
+                        }
+                    }
+
                     no_data!()
                 };
 
+                let origin = hand.is_some().then_some(restrict_to_device);
                 let pose_type = match hand {
-                    Hand::Left => bound.left,
-                    Hand::Right => bound.right,
+                    Some(Hand::Left) => bound.left,
+                    Some(Hand::Right) => bound.right,
+                    None => {
+                        hand = Some(Hand::Left);
+                        bound.left.or_else(|| {
+                            hand = Some(Hand::Right);
+                            bound.right
+                        })
+                    }
                 };
+
                 let Some(ty) = pose_type else {
-                    trace!("action has no bindings for the hand {hand:?}");
+                    trace!("action has no bindings for the hand {:?}", hand);
                     no_data!()
                 };
+
+                let hand = hand.unwrap();
+                let origin = origin.unwrap_or_else(|| match hand {
+                    Hand::Left => self.left_hand_key.data().as_ffi(),
+                    Hand::Right => self.right_hand_key.data().as_ffi(),
+                });
 
                 match ty {
-                    BoundPoseType::Raw | BoundPoseType::Gdc2015 => (active_origin, hand),
+                    BoundPoseType::Raw | BoundPoseType::Gdc2015 => (origin, hand),
                 }
             }
             Ok(ActionData::Skeleton { hand, .. }) => {

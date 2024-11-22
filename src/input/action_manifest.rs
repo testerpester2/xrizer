@@ -257,7 +257,10 @@ fn find_action(actions: &LoadedActionDataMap, name: &str) -> bool {
     let ret = actions.contains_key(name);
     if !ret {
         let caller = std::panic::Location::caller();
-        warn!("Couldn't find action {name}, skipping ({})", caller.line());
+        warn!(
+            "Couldn't find action {name}, skipping (line {})",
+            caller.line()
+        );
     }
     ret
 }
@@ -286,18 +289,18 @@ fn load_actions(
             let set_end_idx = path.match_indices('/').nth(2).unwrap().0;
             let set_name = &path[0..set_end_idx];
             let set = &sets[set_name];
-            let xr_friendly_name = path.rsplit_once('/').unwrap().1;
-            let localized = localized.unwrap_or(xr_friendly_name);
+            let xr_friendly_name = path.rsplit_once('/').unwrap().1.replace([' ', ','], "_");
+            let localized = localized.unwrap_or(&xr_friendly_name);
             trace!(
                 "Creating action {xr_friendly_name} (localized: {localized}) in set {set_name:?}"
             );
 
-            set.create_action(xr_friendly_name, localized, paths)
+            set.create_action(&xr_friendly_name, localized, paths)
                 .or_else(|err| {
                     // If we get a duplicated localized name, just unduplicate it and try again
                     if err == xr::sys::Result::ERROR_LOCALIZED_NAME_DUPLICATED {
                         let localized = format!("{localized} (copy)");
-                        set.create_action(xr_friendly_name, &localized, paths)
+                        set.create_action(&xr_friendly_name, &localized, paths)
                     } else {
                         Err(err)
                     }
