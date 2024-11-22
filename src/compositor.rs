@@ -385,7 +385,7 @@ impl vr::IVRCompositor028_Interface for Compositor {
         crate::warn_unimplemented!("PostPresentHandoff");
     }
     fn ClearLastSubmittedFrame(&self) {
-        todo!()
+        crate::warn_unimplemented!("ClearLastSubmittedFrame");
     }
     fn SubmitWithArrayIndex(
         &self,

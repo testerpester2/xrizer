@@ -646,7 +646,7 @@ impl vr::IVRSystem022_Interface for System {
         if texture_type != vr::ETextureType::Vulkan {
             // Proton doesn't seem to properly translate this function, but it doesn't appear to
             // actually matter.
-            log::error!("Unsupported texture type: {texture_type:?})");
+            log::error!("Unsupported texture type: {texture_type:?}");
             return;
         }
 

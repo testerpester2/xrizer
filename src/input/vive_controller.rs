@@ -13,11 +13,6 @@ impl InteractionProfile for ViveWands {
     const PROFILE_PATH: &'static str = "/interaction_profiles/htc/vive_controller";
     const TRANSLATE_MAP: &'static [PathTranslation] = &[
         PathTranslation {
-            from: "pose/raw",
-            to: "input/grip/pose",
-            stop: true,
-        },
-        PathTranslation {
             from: "grip",
             to: "squeeze",
             stop: true,

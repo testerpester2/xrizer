@@ -13,11 +13,6 @@ impl InteractionProfile for SimpleController {
     const PROFILE_PATH: &'static str = "/interaction_profiles/khr/simple_controller";
     const TRANSLATE_MAP: &'static [PathTranslation] = &[
         PathTranslation {
-            from: "pose/raw",
-            to: "input/grip/pose",
-            stop: true,
-        },
-        PathTranslation {
             from: "trigger",
             to: "select",
             stop: true,

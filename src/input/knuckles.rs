@@ -9,16 +9,6 @@ impl InteractionProfile for Knuckles {
     const OPENVR_CONTROLLER_TYPE: &'static std::ffi::CStr = c"knuckles";
     const TRANSLATE_MAP: &'static [PathTranslation] = &[
         PathTranslation {
-            from: "pose/raw",
-            to: "input/grip/pose",
-            stop: true,
-        },
-        PathTranslation {
-            from: "pose/gdc2015",
-            to: "input/grip/pose",
-            stop: true,
-        },
-        PathTranslation {
             from: "pull",
             to: "value",
             stop: false,

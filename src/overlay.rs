@@ -337,7 +337,8 @@ impl vr::IVROverlay027_Interface for OverlayMan {
         eTrackingOrigin: vr::ETrackingUniverseOrigin,
         pmatTrackingOriginToOverlayTransform: *const vr::HmdMatrix34_t,
     ) -> vr::EVROverlayError {
-        todo!()
+        crate::warn_unimplemented!("SetOverlayTransformAbsolute");
+        vr::EVROverlayError::None
     }
     fn GetOverlayTransformType(
         &self,
@@ -458,7 +459,8 @@ impl vr::IVROverlay027_Interface for OverlayMan {
         ulOverlayHandle: vr::VROverlayHandle_t,
         fAlpha: f32,
     ) -> vr::EVROverlayError {
-        todo!()
+        crate::warn_unimplemented!("SetOverlayAlpha");
+        vr::EVROverlayError::None
     }
     fn GetOverlayColor(
         &self,
