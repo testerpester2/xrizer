@@ -1,6 +1,5 @@
 use super::{
-    custom_bindings::{GrabBindingData, BoolActionData}, knuckles::Knuckles, vive_controller::ViveWands, ActionData,
-    Input, InteractionProfile,
+    knuckles::Knuckles, vive_controller::ViveWands, ActionData, Input, InteractionProfile,
 };
 use crate::{
     openxr_data::OpenXrData,
@@ -168,7 +167,7 @@ impl Fixture {
         handle
     }
 
-    fn get_action_set_handle(&self, name: &CStr) -> vr::VRActionSetHandle_t {
+    pub fn get_action_set_handle(&self, name: &CStr) -> vr::VRActionSetHandle_t {
         let mut handle = 0;
         assert_eq!(
             self.input.GetActionSetHandle(name.as_ptr(), &mut handle),
@@ -178,7 +177,16 @@ impl Fixture {
         handle
     }
 
-    fn sync(&self, mut active: vr::VRActiveActionSet_t) {
+    pub fn get_input_source_handle(&self, name: &CStr) -> vr::VRInputValueHandle_t {
+        let mut src = 0;
+        assert_eq!(
+            self.input.GetInputSourceHandle(name.as_ptr(), &mut src),
+            vr::EVRInputError::None
+        );
+        src
+    }
+
+    pub fn sync(&self, mut active: vr::VRActiveActionSet_t) {
         assert_eq!(
             self.input.UpdateActionState(
                 &mut active,
@@ -224,14 +232,14 @@ impl Fixture {
         }
     }
 
-    fn get_bool_state(
+    pub fn get_bool_state(
         &self,
         handle: vr::VRActionHandle_t,
     ) -> Result<vr::InputDigitalActionData_t, vr::EVRInputError> {
         self.get_bool_state_hand(handle, 0)
     }
 
-    fn get_bool_state_hand(
+    pub fn get_bool_state_hand(
         &self,
         handle: vr::VRActionHandle_t,
         restrict: vr::VRInputValueHandle_t,
@@ -471,94 +479,6 @@ fn reload_manifest_on_session_restart() {
     assert_eq!(state.bActive, true);
 }
 
-macro_rules! get_dpad_action {
-    ($fixture:expr, $handle:expr, $dpad_data:ident) => {
-        let data = $fixture.input.openxr.session_data.get();
-        let actions = data.input_data.get_loaded_actions().unwrap();
-        let super::ActionData::Bool(BoolActionData { dpad_data, .. }) =
-            actions.try_get_action($handle).unwrap()
-        else {
-            panic!("should be bool action");
-        };
-
-        let $dpad_data = dpad_data.as_ref().unwrap();
-    };
-}
-
-#[test]
-fn dpad_input() {
-    let f = Fixture::new();
-
-    let set1 = f.get_action_set_handle(c"/actions/set1");
-    let boolact = f.get_action_handle(c"/actions/set1/in/boolact");
-
-    f.load_actions(c"actions_dpad.json");
-    f.input.openxr.restart_session();
-
-    get_dpad_action!(f, boolact, dpad_data);
-
-    fakexr::set_action_state(
-        dpad_data.parent.as_raw(),
-        fakexr::ActionState::Vector2(0.0, 0.5),
-        LeftHand,
-    );
-    fakexr::set_action_state(
-        dpad_data.click_or_touch.as_ref().unwrap().as_raw(),
-        fakexr::ActionState::Bool(true),
-        LeftHand,
-    );
-
-    f.sync(vr::VRActiveActionSet_t {
-        ulActionSet: set1,
-        ..Default::default()
-    });
-
-    let state = f.get_bool_state(boolact).unwrap();
-    assert_eq!(state.bActive, true);
-    assert_eq!(state.bState, true);
-    assert_eq!(state.bChanged, true);
-
-    f.sync(vr::VRActiveActionSet_t {
-        ulActionSet: set1,
-        ..Default::default()
-    });
-
-    let state = f.get_bool_state(boolact).unwrap();
-    assert_eq!(state.bActive, true);
-    assert_eq!(state.bState, true);
-    assert_eq!(state.bChanged, false);
-
-    fakexr::set_action_state(
-        dpad_data.parent.as_raw(),
-        fakexr::ActionState::Vector2(0.5, 0.0),
-        LeftHand,
-    );
-    f.sync(vr::VRActiveActionSet_t {
-        ulActionSet: set1,
-        ..Default::default()
-    });
-
-    let state = f.get_bool_state(boolact).unwrap();
-    assert_eq!(state.bActive, true);
-    assert_eq!(state.bState, false);
-    assert_eq!(state.bChanged, true);
-}
-
-#[test]
-fn dpad_input_different_sets_have_different_actions() {
-    let f = Fixture::new();
-
-    let boolact_set1 = f.get_action_handle(c"/actions/set1/in/boolact");
-    let boolact_set2 = f.get_action_handle(c"/actions/set2/in/boolact");
-
-    f.load_actions(c"actions_dpad.json");
-
-    get_dpad_action!(f, boolact_set1, set1_dpad);
-    get_dpad_action!(f, boolact_set2, set2_dpad);
-
-    assert_ne!(set1_dpad.parent.as_raw(), set2_dpad.parent.as_raw());
-}
-
 #[track_caller]
 fn compare_pose(expected: xr::Posef, actual: xr::Posef) {
     let epos = expected.position;
@@ -609,15 +529,7 @@ fn raw_pose_is_grip_at_aim() {
     let f = Fixture::new();
 
     let pose_handle = f.get_action_handle(c"/actions/set1/in/pose");
-    let left_hand = {
-        let mut h = 0;
-        assert_eq!(
-            f.input
-                .GetInputSourceHandle(c"/user/hand/left".as_ptr(), &mut h),
-            vr::EVRInputError::None
-        );
-        h
-    };
+    let left_hand = f.get_input_source_handle(c"/user/hand/left");
     f.load_actions(c"actions.json");
     f.set_interaction_profile::<Knuckles>(LeftHand);
 
@@ -671,15 +583,7 @@ fn raw_pose_is_grip_at_aim() {
 #[test]
 fn raw_pose_waitgetposes_and_skeletal_pose_identical() {
     let f = Fixture::new();
-    let left_hand = {
-        let mut h = 0;
-        assert_eq!(
-            f.input
-                .GetInputSourceHandle(c"/user/hand/left".as_ptr(), &mut h),
-            vr::EVRInputError::None
-        );
-        h
-    };
+    let left_hand = f.get_input_source_handle(c"/user/hand/left");
     let pose_handle = f.get_action_handle(c"/actions/set1/in/pose");
     let skel_handle = f.get_action_handle(c"/actions/set1/in/skellyl");
     f.load_actions(c"actions.json");
@@ -742,155 +646,6 @@ fn raw_pose_waitgetposes_and_skeletal_pose_identical() {
         hmdmatrix34_to_pose(waitgetposes_pose.mDeviceToAbsoluteTracking),
         hmdmatrix34_to_pose(skel_pose.pose.mDeviceToAbsoluteTracking),
     );
-}
-
-#[test]
-fn dpad_input_use_non_dpad_when_available() {
-    let f = Fixture::new();
-    let set1 = f.get_action_set_handle(c"/actions/set1");
-    let boolact = f.get_action_handle(c"/actions/set1/in/boolact");
-
-    f.load_actions(c"actions_dpad_mixed.json");
-    f.input.openxr.restart_session();
-
-    get_dpad_action!(f, boolact, _dpad);
-
-    f.sync(vr::VRActiveActionSet_t {
-        ulActionSet: set1,
-        ..Default::default()
-    });
-
-    let state = f.get_bool_state(boolact).unwrap();
-    assert_eq!(state.bState, false);
-    assert_eq!(state.bActive, false);
-    assert_eq!(state.bChanged, false);
-
-    fakexr::set_action_state(
-        f.get_action::<bool>(boolact),
-        fakexr::ActionState::Bool(true),
-        LeftHand,
-    );
-    f.sync(vr::VRActiveActionSet_t {
-        ulActionSet: set1,
-        ..Default::default()
-    });
-
-    let state = f.get_bool_state(boolact).unwrap();
-    assert_eq!(state.bState, true);
-    assert_eq!(state.bActive, true);
-    assert_eq!(state.bChanged, true);
-}
-
-macro_rules! get_grab_action {
-    ($fixture:expr, $handle:expr, $grab_data:ident) => {
-        let data = $fixture.input.openxr.session_data.get();
-        let actions = data.input_data.get_loaded_actions().unwrap();
-        let super::ActionData::Bool(BoolActionData { grab_data, .. }) =
-            actions.try_get_action($handle).unwrap()
-        else {
-            panic!("should be bool action");
-        };
-
-        let $grab_data = grab_data.as_ref().unwrap();
-    };
-}
-
-#[test]
-fn grab_binding() {
-    let f = Fixture::new();
-    let set1 = f.get_action_set_handle(c"/actions/set1");
-    let boolact = f.get_action_handle(c"/actions/set1/in/boolact");
-    f.load_actions(c"actions.json");
-    get_grab_action!(f, boolact, grab_data);
-
-    let value_state_check = |force, value, state, changed, line| {
-        fakexr::set_action_state(
-            grab_data.force_action.as_raw(),
-            fakexr::ActionState::Float(force),
-            LeftHand,
-        );
-        fakexr::set_action_state(
-            grab_data.value_action.as_raw(),
-            fakexr::ActionState::Float(value),
-            LeftHand,
-        );
-        f.sync(vr::VRActiveActionSet_t {
-            ulActionSet: set1,
-            ..Default::default()
-        });
-
-        let s = f.get_bool_state(boolact).unwrap();
-        assert_eq!(s.bState, state, "state failed (line {line})");
-        assert_eq!(s.bActive, true, "active failed (line {line})");
-        assert_eq!(s.bChanged, changed, "changed failed (line {line})");
-    };
-
-    let grab = GrabBindingData::GRAB_THRESHOLD;
-    let release = GrabBindingData::RELEASE_THRESHOLD;
-    value_state_check(grab - 0.1, 1.0, false, false, line!());
-    value_state_check(grab, 1.0, true, true, line!());
-    value_state_check(0.0, 1.0, true, false, line!());
-    value_state_check(0.0, release, false, true, line!());
-    value_state_check(grab - 0.1, 1.0, false, false, line!());
-}
-
-#[test]
-fn grab_per_hand() {
-    let f = Fixture::new();
-    let set1 = f.get_action_set_handle(c"/actions/set1");
-    let boolact = f.get_action_handle(c"/actions/set1/in/boolact");
-
-    let mut left = 0;
-    let ret = f
-        .input
-        .GetInputSourceHandle(c"/user/hand/left".as_ptr(), &mut left);
-    assert_eq!(ret, vr::EVRInputError::None);
-    let mut right = 0;
-    let ret = f
-        .input
-        .GetInputSourceHandle(c"/user/hand/right".as_ptr(), &mut right);
-    assert_eq!(ret, vr::EVRInputError::None);
-
-    f.load_actions(c"actions_dpad_mixed.json");
-
-    get_grab_action!(f, set1, grab_data);
-
-    let value_state_check = |force, value, hand, state, changed, line| {
-        fakexr::set_action_state(
-            grab_data.force_action.as_raw(),
-            fakexr::ActionState::Float(force),
-            hand,
-        );
-        fakexr::set_action_state(
-            grab_data.value_action.as_raw(),
-            fakexr::ActionState::Float(value),
-            hand,
-        );
-        f.sync(vr::VRActiveActionSet_t {
-            ulActionSet: set1,
-            ..Default::default()
-        });
-
-        let restrict = match hand {
-            LeftHand => left,
-            RightHand => right,
-        };
-        let s = f.get_bool_state_hand(boolact, restrict).unwrap();
-        assert_eq!(s.bState, state, "State wrong (line {line})");
-        assert_eq!(s.bActive, true, "Active wrong (line {line})");
-        assert_eq!(s.bChanged, changed, "Changed wrong (line {line})");
-    };
-
-    let grab = GrabBindingData::GRAB_THRESHOLD;
-    let release = GrabBindingData::RELEASE_THRESHOLD;
-    value_state_check(grab - 0.1, 1.0, LeftHand, false, false, line!());
-    value_state_check(grab - 0.1, 1.0, RightHand, false, false, line!());
-
-    value_state_check(grab, 1.0, LeftHand, true, true, line!());
-    value_state_check(grab, 1.0, RightHand, true, true, line!());
-
-    value_state_check(0.0, release, LeftHand, false, true, line!());
-    value_state_check(0.0, 1.0, RightHand, true, false, line!());
 }
 
 #[test]

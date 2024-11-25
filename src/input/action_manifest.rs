@@ -1,5 +1,7 @@
 use super::{
-    custom_bindings::{BoolActionData, DpadData, DpadDirection, FloatActionData, GrabBindingData},
+    custom_bindings::{
+        BoolActionData, DpadData, DpadDirection, FloatActionData, GrabBindingData, ToggleData,
+    },
     knuckles::Knuckles,
     vive_controller::ViveWands,
     BoundPoseType, Input,
@@ -1155,7 +1157,40 @@ fn handle_sources(
                     if matches!(mode, ActionBinding::Button { .. }) {
                         try_get_bool_binding(output.to_string(), translated);
                     } else {
-                        todo!()
+                        let mut actions = actions.borrow_mut();
+                        if !find_action(&actions, output) {
+                            continue;
+                        }
+
+                        let mut data = actions.remove(output).unwrap();
+                        let name_only = output.rsplit_once('/').unwrap().1;
+                        let toggle_name = format!("{name_only}_tgl");
+
+                        match &mut data {
+                            super::ActionData::Bool(data) => {
+                                if data.toggle_data.is_none() {
+                                    let localized = format!("{name_only} toggle");
+                                    let action = action_set
+                                        .create_action(&toggle_name, &localized, &hands)
+                                        .unwrap();
+                                    actions.insert(
+                                        toggle_name.clone(),
+                                        super::ActionData::Bool(BoolActionData::new(
+                                            action.clone(),
+                                        )),
+                                    );
+                                    data.toggle_data = Some(ToggleData::new(action, hands));
+                                }
+                            }
+                            _ => panic!("expected action {output} to be boolean"),
+                        }
+                        actions.insert(output.to_string(), data);
+
+                        trace!("suggesting {translated} for {output} (toggle)");
+                        bindings.borrow_mut().push((
+                            toggle_name.clone(),
+                            instance.string_to_path(&translated).unwrap(),
+                        ));
                     }
                 }
 

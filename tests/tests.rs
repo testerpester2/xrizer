@@ -1,4 +1,4 @@
-use libloading::{Library, Symbol};
+use libloading::Library;
 
 #[test]
 #[cfg_attr(miri, ignore)]

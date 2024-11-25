@@ -20,6 +20,12 @@ pub enum ActionState {
     Haptic,
 }
 
+impl From<bool> for ActionState {
+    fn from(value: bool) -> Self {
+        Self::Bool(value)
+    }
+}
+
 pub fn set_action_state(action: xr::Action, state: ActionState, hand: UserPath) {
     let action = action.to_handle().unwrap();
     assert_eq!(

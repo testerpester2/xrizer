@@ -6,6 +6,7 @@ pub(super) struct BoolActionData {
     pub action: xr::Action<bool>,
     pub dpad_data: Option<DpadData>,
     pub grab_data: Option<GrabBindingData>,
+    pub toggle_data: Option<ToggleData>,
 }
 
 impl BoolActionData {
@@ -14,6 +15,7 @@ impl BoolActionData {
             action,
             dpad_data: None,
             grab_data: None,
+            toggle_data: None,
         }
     }
 
@@ -46,6 +48,15 @@ impl BoolActionData {
         if let Some(data) = &self.grab_data {
             if let Some(state) = data.grabbed(session, subaction_path)? {
                 return Ok(state);
+            }
+        }
+
+        if let Some(data) = &self.toggle_data {
+            if let Some(s) = data.state(session, subaction_path)? {
+                state = s;
+                if s.current_state {
+                    return Ok(s);
+                }
             }
         }
 
@@ -246,5 +257,454 @@ impl GrabBindingData {
                 is_active: true,
             }))
         }
+    }
+}
+
+pub(super) struct ToggleData {
+    pub action: xr::Action<bool>,
+    pub last_state: [(xr::Path, AtomicBool); 2],
+}
+
+impl ToggleData {
+    pub fn new(action: xr::Action<bool>, paths: [xr::Path; 2]) -> Self {
+        Self {
+            action,
+            last_state: paths.map(|p| (p, false.into())),
+        }
+    }
+
+    pub fn state<G>(
+        &self,
+        session: &xr::Session<G>,
+        subaction_path: xr::Path,
+    ) -> xr::Result<Option<xr::ActionState<bool>>> {
+        let state = self.action.state(session, subaction_path)?;
+        if !state.is_active {
+            return Ok(None);
+        }
+
+        let (current_state, changed_since_last_sync) = match &self.last_state {
+            [(path, old_state), _] | [_, (path, old_state)] if *path == subaction_path => {
+                let s = old_state.load(Ordering::Relaxed);
+                let ret = if state.changed_since_last_sync && state.current_state {
+                    !s
+                } else {
+                    s
+                };
+
+                let changed = old_state
+                    .compare_exchange(!ret, ret, Ordering::Relaxed, Ordering::Relaxed)
+                    .is_ok();
+                (ret, changed)
+            }
+            [(_, state1), (_, state2)] if subaction_path == xr::Path::NULL => {
+                let s = state1.load(Ordering::Relaxed) || state2.load(Ordering::Relaxed);
+                let ret = if state.changed_since_last_sync && state.current_state {
+                    !s
+                } else {
+                    s
+                };
+                let cmpex = |state: &AtomicBool| {
+                    state
+                        .compare_exchange(!ret, ret, Ordering::Relaxed, Ordering::Relaxed)
+                        .is_ok()
+                };
+                let changed1 = cmpex(state1);
+                let changed2 = cmpex(state2);
+                (ret, changed1 || changed2)
+            }
+            _ => unreachable!(),
+        };
+
+        Ok(Some(xr::ActionState {
+            current_state,
+            changed_since_last_sync,
+            last_change_time: state.last_change_time,
+            is_active: true,
+        }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::input::{tests::Fixture, ActionData};
+    use crate::vr;
+    use fakexr::UserPath::*;
+
+    macro_rules! get_toggle_action {
+        ($fixture:expr, $handle:expr, $toggle_data:ident) => {
+            let data = $fixture.input.openxr.session_data.get();
+            let actions = data.input_data.get_loaded_actions().unwrap();
+            let ActionData::Bool(BoolActionData { toggle_data, .. }) =
+                actions.try_get_action($handle).unwrap()
+            else {
+                panic!("should be bool action");
+            };
+
+            let $toggle_data = toggle_data.as_ref().unwrap();
+        };
+    }
+
+    macro_rules! get_dpad_action {
+        ($fixture:expr, $handle:expr, $dpad_data:ident) => {
+            let data = $fixture.input.openxr.session_data.get();
+            let actions = data.input_data.get_loaded_actions().unwrap();
+            let ActionData::Bool(BoolActionData { dpad_data, .. }) =
+                actions.try_get_action($handle).unwrap()
+            else {
+                panic!("should be bool action");
+            };
+
+            let $dpad_data = dpad_data.as_ref().unwrap();
+        };
+    }
+
+    macro_rules! get_grab_action {
+        ($fixture:expr, $handle:expr, $grab_data:ident) => {
+            let data = $fixture.input.openxr.session_data.get();
+            let actions = data.input_data.get_loaded_actions().unwrap();
+            let ActionData::Bool(BoolActionData { grab_data, .. }) =
+                actions.try_get_action($handle).unwrap()
+            else {
+                panic!("should be bool action");
+            };
+
+            let $grab_data = grab_data.as_ref().unwrap();
+        };
+    }
+
+    #[test]
+    fn dpad_input() {
+        let f = Fixture::new();
+
+        let set1 = f.get_action_set_handle(c"/actions/set1");
+        let boolact = f.get_action_handle(c"/actions/set1/in/boolact");
+
+        f.load_actions(c"actions_dpad.json");
+        f.input.openxr.restart_session();
+
+        get_dpad_action!(f, boolact, dpad_data);
+
+        fakexr::set_action_state(
+            dpad_data.parent.as_raw(),
+            fakexr::ActionState::Vector2(0.0, 0.5),
+            LeftHand,
+        );
+        fakexr::set_action_state(
+            dpad_data.click_or_touch.as_ref().unwrap().as_raw(),
+            fakexr::ActionState::Bool(true),
+            LeftHand,
+        );
+
+        f.sync(vr::VRActiveActionSet_t {
+            ulActionSet: set1,
+            ..Default::default()
+        });
+
+        let state = f.get_bool_state(boolact).unwrap();
+        assert_eq!(state.bActive, true);
+        assert_eq!(state.bState, true);
+        assert_eq!(state.bChanged, true);
+
+        f.sync(vr::VRActiveActionSet_t {
+            ulActionSet: set1,
+            ..Default::default()
+        });
+
+        let state = f.get_bool_state(boolact).unwrap();
+        assert_eq!(state.bActive, true);
+        assert_eq!(state.bState, true);
+        assert_eq!(state.bChanged, false);
+
+        fakexr::set_action_state(
+            dpad_data.parent.as_raw(),
+            fakexr::ActionState::Vector2(0.5, 0.0),
+            LeftHand,
+        );
+        f.sync(vr::VRActiveActionSet_t {
+            ulActionSet: set1,
+            ..Default::default()
+        });
+
+        let state = f.get_bool_state(boolact).unwrap();
+        assert_eq!(state.bActive, true);
+        assert_eq!(state.bState, false);
+        assert_eq!(state.bChanged, true);
+    }
+
+    #[test]
+    fn dpad_input_different_sets_have_different_actions() {
+        let f = Fixture::new();
+
+        let boolact_set1 = f.get_action_handle(c"/actions/set1/in/boolact");
+        let boolact_set2 = f.get_action_handle(c"/actions/set2/in/boolact");
+
+        f.load_actions(c"actions_dpad.json");
+
+        get_dpad_action!(f, boolact_set1, set1_dpad);
+        get_dpad_action!(f, boolact_set2, set2_dpad);
+
+        assert_ne!(set1_dpad.parent.as_raw(), set2_dpad.parent.as_raw());
+    }
+
+    #[test]
+    fn dpad_input_use_non_dpad_when_available() {
+        let f = Fixture::new();
+        let set1 = f.get_action_set_handle(c"/actions/set1");
+        let boolact = f.get_action_handle(c"/actions/set1/in/boolact");
+
+        f.load_actions(c"actions_dpad_mixed.json");
+        f.input.openxr.restart_session();
+
+        get_dpad_action!(f, boolact, _dpad);
+
+        f.sync(vr::VRActiveActionSet_t {
+            ulActionSet: set1,
+            ..Default::default()
+        });
+
+        let state = f.get_bool_state(boolact).unwrap();
+        assert_eq!(state.bState, false);
+        assert_eq!(state.bActive, false);
+        assert_eq!(state.bChanged, false);
+
+        fakexr::set_action_state(
+            f.get_action::<bool>(boolact),
+            fakexr::ActionState::Bool(true),
+            LeftHand,
+        );
+        f.sync(vr::VRActiveActionSet_t {
+            ulActionSet: set1,
+            ..Default::default()
+        });
+
+        let state = f.get_bool_state(boolact).unwrap();
+        assert_eq!(state.bState, true);
+        assert_eq!(state.bActive, true);
+        assert_eq!(state.bChanged, true);
+    }
+
+    #[test]
+    fn grab_binding() {
+        let f = Fixture::new();
+        let set1 = f.get_action_set_handle(c"/actions/set1");
+        let boolact = f.get_action_handle(c"/actions/set1/in/boolact");
+        f.load_actions(c"actions.json");
+        get_grab_action!(f, boolact, grab_data);
+
+        let value_state_check = |force, value, state, changed, line| {
+            fakexr::set_action_state(
+                grab_data.force_action.as_raw(),
+                fakexr::ActionState::Float(force),
+                LeftHand,
+            );
+            fakexr::set_action_state(
+                grab_data.value_action.as_raw(),
+                fakexr::ActionState::Float(value),
+                LeftHand,
+            );
+            f.sync(vr::VRActiveActionSet_t {
+                ulActionSet: set1,
+                ..Default::default()
+            });
+
+            let s = f.get_bool_state(boolact).unwrap();
+            assert_eq!(s.bState, state, "state failed (line {line})");
+            assert_eq!(s.bActive, true, "active failed (line {line})");
+            assert_eq!(s.bChanged, changed, "changed failed (line {line})");
+        };
+
+        let grab = GrabBindingData::GRAB_THRESHOLD;
+        let release = GrabBindingData::RELEASE_THRESHOLD;
+        value_state_check(grab - 0.1, 1.0, false, false, line!());
+        value_state_check(grab, 1.0, true, true, line!());
+        value_state_check(0.0, 1.0, true, false, line!());
+        value_state_check(0.0, release, false, true, line!());
+        value_state_check(grab - 0.1, 1.0, false, false, line!());
+    }
+
+    #[test]
+    fn grab_per_hand() {
+        let f = Fixture::new();
+        let set1 = f.get_action_set_handle(c"/actions/set1");
+        let boolact = f.get_action_handle(c"/actions/set1/in/boolact");
+
+        let left = f.get_input_source_handle(c"/user/hand/left");
+        let right = f.get_input_source_handle(c"/user/hand/right");
+
+        f.load_actions(c"actions_dpad_mixed.json");
+
+        get_grab_action!(f, set1, grab_data);
+
+        let value_state_check = |force, value, hand, state, changed, line| {
+            fakexr::set_action_state(
+                grab_data.force_action.as_raw(),
+                fakexr::ActionState::Float(force),
+                hand,
+            );
+            fakexr::set_action_state(
+                grab_data.value_action.as_raw(),
+                fakexr::ActionState::Float(value),
+                hand,
+            );
+            f.sync(vr::VRActiveActionSet_t {
+                ulActionSet: set1,
+                ..Default::default()
+            });
+
+            let restrict = match hand {
+                LeftHand => left,
+                RightHand => right,
+            };
+            let s = f.get_bool_state_hand(boolact, restrict).unwrap();
+            assert_eq!(s.bState, state, "State wrong (line {line})");
+            assert_eq!(s.bActive, true, "Active wrong (line {line})");
+            assert_eq!(s.bChanged, changed, "Changed wrong (line {line})");
+        };
+
+        let grab = GrabBindingData::GRAB_THRESHOLD;
+        let release = GrabBindingData::RELEASE_THRESHOLD;
+        value_state_check(grab - 0.1, 1.0, LeftHand, false, false, line!());
+        value_state_check(grab - 0.1, 1.0, RightHand, false, false, line!());
+
+        value_state_check(grab, 1.0, LeftHand, true, true, line!());
+        value_state_check(grab, 1.0, RightHand, true, true, line!());
+
+        value_state_check(0.0, release, LeftHand, false, true, line!());
+        value_state_check(0.0, 1.0, RightHand, true, false, line!());
+    }
+
+    #[test]
+    fn toggle_button() {
+        let f = Fixture::new();
+        let set1 = f.get_action_set_handle(c"/actions/set1");
+        let boolact = f.get_action_handle(c"/actions/set1/in/boolact");
+        f.load_actions(c"actions_toggle.json");
+
+        get_toggle_action!(f, boolact, toggle_data);
+
+        fakexr::set_action_state(
+            toggle_data.action.as_raw(),
+            fakexr::ActionState::Bool(true),
+            LeftHand,
+        );
+
+        f.sync(vr::VRActiveActionSet_t {
+            ulActionSet: set1,
+            ..Default::default()
+        });
+
+        let state = f.get_bool_state(boolact).unwrap();
+        assert!(state.bActive);
+        assert!(state.bState);
+        assert!(state.bChanged);
+
+        fakexr::set_action_state(
+            toggle_data.action.as_raw(),
+            fakexr::ActionState::Bool(false),
+            LeftHand,
+        );
+
+        f.sync(vr::VRActiveActionSet_t {
+            ulActionSet: set1,
+            ..Default::default()
+        });
+
+        let state = f.get_bool_state(boolact).unwrap();
+        assert!(state.bActive);
+        assert!(state.bState);
+        assert!(!state.bChanged);
+
+        fakexr::set_action_state(
+            toggle_data.action.as_raw(),
+            fakexr::ActionState::Bool(true),
+            LeftHand,
+        );
+
+        f.sync(vr::VRActiveActionSet_t {
+            ulActionSet: set1,
+            ..Default::default()
+        });
+
+        let state = f.get_bool_state(boolact).unwrap();
+        assert!(state.bActive);
+        assert!(!state.bState);
+        assert!(state.bChanged);
+
+        // no change across sync point
+        f.sync(vr::VRActiveActionSet_t {
+            ulActionSet: set1,
+            ..Default::default()
+        });
+
+        let state = f.get_bool_state(boolact).unwrap();
+        assert!(state.bActive);
+        assert!(!state.bState);
+        assert!(!state.bChanged);
+    }
+
+    #[test]
+    fn toggle_button_per_hand() {
+        let f = Fixture::new();
+        let set1 = f.get_action_set_handle(c"/actions/set1");
+        let boolact = f.get_action_handle(c"/actions/set1/in/boolact");
+        let left = f.get_input_source_handle(c"/user/hand/left");
+        let right = f.get_input_source_handle(c"/user/hand/right");
+
+        f.load_actions(c"actions_toggle.json");
+        get_toggle_action!(f, boolact, toggle_data);
+
+        let act = toggle_data.action.as_raw();
+
+        fakexr::set_action_state(act, false.into(), LeftHand);
+        fakexr::set_action_state(act, false.into(), RightHand);
+        f.sync(vr::VRActiveActionSet_t {
+            ulActionSet: set1,
+            ..Default::default()
+        });
+
+        let s_left = f.get_bool_state_hand(boolact, left).unwrap();
+        assert!(s_left.bActive);
+        assert!(!s_left.bState);
+        assert!(!s_left.bChanged);
+
+        let s_right = f.get_bool_state_hand(boolact, right).unwrap();
+        assert!(s_right.bActive);
+        assert!(!s_right.bState);
+        assert!(!s_right.bChanged);
+
+        fakexr::set_action_state(act, true.into(), LeftHand);
+        f.sync(vr::VRActiveActionSet_t {
+            ulActionSet: set1,
+            ..Default::default()
+        });
+
+        let s_left = f.get_bool_state_hand(boolact, left).unwrap();
+        assert!(s_left.bActive);
+        assert!(s_left.bState);
+        assert!(s_left.bChanged);
+
+        let s_right = f.get_bool_state_hand(boolact, right).unwrap();
+        assert!(s_right.bActive);
+        assert!(!s_right.bState);
+        assert!(!s_right.bChanged);
+
+        fakexr::set_action_state(act, false.into(), LeftHand);
+        fakexr::set_action_state(act, true.into(), RightHand);
+        f.sync(vr::VRActiveActionSet_t {
+            ulActionSet: set1,
+            ..Default::default()
+        });
+
+        let s_left = f.get_bool_state_hand(boolact, left).unwrap();
+        assert!(s_left.bActive);
+        assert!(s_left.bState);
+        assert!(!s_left.bChanged);
+
+        let s_right = f.get_bool_state_hand(boolact, right).unwrap();
+        assert!(s_right.bActive);
+        assert!(s_right.bState);
+        assert!(s_right.bChanged);
     }
 }
