@@ -1,4 +1,9 @@
-use super::{knuckles::Knuckles, vive_controller::ViveWands, BoundPoseType, Input};
+use super::{
+    custom_bindings::{BoolActionData, DpadData, DpadDirection, FloatActionData, GrabBindingData},
+    knuckles::Knuckles,
+    vive_controller::ViveWands,
+    BoundPoseType, Input,
+};
 use crate::{
     openxr_data::{self, Hand, SessionData},
     vr,
@@ -327,17 +332,17 @@ fn load_actions(
         let (path, action) = match &action {
             ActionType::Boolean(data) => (
                 &data.name,
-                Bool(super::BoolActionData::new(create_action!(bool, data))),
+                Bool(BoolActionData::new(create_action!(bool, data))),
             ),
             ActionType::Vector1(data) => (
                 &data.name,
-                Vector1(super::FloatActionData::new(create_action!(f32, data))),
+                Vector1(FloatActionData::new(create_action!(f32, data))),
             ),
             ActionType::Vector2(data) => (
                 &data.name,
                 Vector2 {
                     action: create_action!(xr::Vector2f, data),
-                    last_value: (super::AtomicF32::new(0.0), super::AtomicF32::new(0.0)),
+                    last_value: Default::default(),
                 },
             ),
             ActionType::Pose(data) => (
@@ -473,6 +478,10 @@ enum ActionBinding {
         inputs: ButtonInput,
         #[serde(rename = "parameters")]
         _parameters: Option<ButtonParameters>,
+    },
+    ToggleButton {
+        path: String,
+        inputs: ButtonInput,
     },
     Dpad {
         path: String,
@@ -898,7 +907,7 @@ fn handle_dpad_binding(
     // Workaround weird closure lifetime quirks.
     const fn constrain<F>(f: F) -> F
     where
-        F: for<'a> Fn(&'a Option<ActionBindingOutput>, super::DpadDirection) -> Option<&'a str>,
+        F: for<'a> Fn(&'a Option<ActionBindingOutput>, DpadDirection) -> Option<&'a str>,
     {
         f
     }
@@ -914,9 +923,9 @@ fn handle_dpad_binding(
         ret.then_some(output)
     });
 
-    use super::DpadDirection::*;
+    use DpadDirection::*;
 
-    let bound_actions: Vec<(&str, super::DpadDirection)> = [
+    let bound_actions: Vec<(&str, DpadDirection)> = [
         (maybe_find_action(north, North), North),
         (maybe_find_action(east, East), East),
         (maybe_find_action(south, South), South),
@@ -954,7 +963,7 @@ fn handle_dpad_binding(
 
         if data.dpad_data.is_none() {
             let (parent_action, click_or_touch) = LazyCell::force(&created_actions);
-            data.dpad_data = Some(super::DpadData {
+            data.dpad_data = Some(DpadData {
                 parent: parent_action.clone(),
                 click_or_touch: click_or_touch.as_ref().map(|d| d.action.clone()),
                 direction,
@@ -1045,14 +1054,14 @@ fn get_dpad_parent(
             let dpad_activator_name = format!("xrizer-dpad-active{len}");
             let localized = format!("XRizer dpad active ({len})");
 
-            super::ActionData::Bool(super::BoolActionData::new(
+            super::ActionData::Bool(BoolActionData::new(
                 action_set
                     .create_action(&dpad_activator_name, &localized, &[])
                     .unwrap(),
             ))
         });
 
-        let super::ActionData::Bool(super::BoolActionData { action, .. }) = action else {
+        let super::ActionData::Bool(BoolActionData { action, .. }) = action else {
             unreachable!();
         };
         action
@@ -1134,11 +1143,8 @@ fn handle_sources(
 
         match mode {
             ActionBinding::None(_) => {}
-            ActionBinding::Button {
-                path,
-                inputs,
-                _parameters,
-            } => {
+            ActionBinding::Button { path, inputs, .. }
+            | ActionBinding::ToggleButton { path, inputs } => {
                 if let Some(ActionBindingOutput { output }) = &inputs.click {
                     let Ok(translated) = path_translator(&format!("{path}/click"))
                         .inspect_err(translate_warn(output))
@@ -1146,7 +1152,11 @@ fn handle_sources(
                         continue;
                     };
 
-                    try_get_bool_binding(output.to_string(), translated);
+                    if matches!(mode, ActionBinding::Button { .. }) {
+                        try_get_bool_binding(output.to_string(), translated);
+                    } else {
+                        todo!()
+                    }
                 }
 
                 if let Some(ActionBindingOutput { output }) = &inputs.double {
@@ -1291,18 +1301,14 @@ fn handle_sources(
 
                     actions.insert(
                         force_name.clone(),
-                        super::ActionData::Vector1(super::FloatActionData::new(
-                            force_action.clone(),
-                        )),
+                        super::ActionData::Vector1(FloatActionData::new(force_action.clone())),
                     );
                     actions.insert(
                         value_name.clone(),
-                        super::ActionData::Vector1(super::FloatActionData::new(
-                            value_action.clone(),
-                        )),
+                        super::ActionData::Vector1(FloatActionData::new(value_action.clone())),
                     );
 
-                    super::GrabBindingData::new(force_action, value_action, hands)
+                    GrabBindingData::new(force_action, value_action, hands)
                 };
 
                 let mut data = actions.remove(output).unwrap();

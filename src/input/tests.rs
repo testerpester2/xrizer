@@ -1,5 +1,6 @@
 use super::{
-    knuckles::Knuckles, vive_controller::ViveWands, ActionData, Input, InteractionProfile,
+    custom_bindings::{GrabBindingData, BoolActionData}, knuckles::Knuckles, vive_controller::ViveWands, ActionData,
+    Input, InteractionProfile,
 };
 use crate::{
     openxr_data::OpenXrData,
@@ -474,7 +475,7 @@ macro_rules! get_dpad_action {
     ($fixture:expr, $handle:expr, $dpad_data:ident) => {
         let data = $fixture.input.openxr.session_data.get();
         let actions = data.input_data.get_loaded_actions().unwrap();
-        let super::ActionData::Bool(super::BoolActionData { dpad_data, .. }) =
+        let super::ActionData::Bool(BoolActionData { dpad_data, .. }) =
             actions.try_get_action($handle).unwrap()
         else {
             panic!("should be bool action");
@@ -784,7 +785,7 @@ macro_rules! get_grab_action {
     ($fixture:expr, $handle:expr, $grab_data:ident) => {
         let data = $fixture.input.openxr.session_data.get();
         let actions = data.input_data.get_loaded_actions().unwrap();
-        let super::ActionData::Bool(super::BoolActionData { grab_data, .. }) =
+        let super::ActionData::Bool(BoolActionData { grab_data, .. }) =
             actions.try_get_action($handle).unwrap()
         else {
             panic!("should be bool action");
@@ -824,8 +825,8 @@ fn grab_binding() {
         assert_eq!(s.bChanged, changed, "changed failed (line {line})");
     };
 
-    let grab = super::GrabBindingData::GRAB_THRESHOLD;
-    let release = super::GrabBindingData::RELEASE_THRESHOLD;
+    let grab = GrabBindingData::GRAB_THRESHOLD;
+    let release = GrabBindingData::RELEASE_THRESHOLD;
     value_state_check(grab - 0.1, 1.0, false, false, line!());
     value_state_check(grab, 1.0, true, true, line!());
     value_state_check(0.0, 1.0, true, false, line!());
@@ -880,8 +881,8 @@ fn grab_per_hand() {
         assert_eq!(s.bChanged, changed, "Changed wrong (line {line})");
     };
 
-    let grab = super::GrabBindingData::GRAB_THRESHOLD;
-    let release = super::GrabBindingData::RELEASE_THRESHOLD;
+    let grab = GrabBindingData::GRAB_THRESHOLD;
+    let release = GrabBindingData::RELEASE_THRESHOLD;
     value_state_check(grab - 0.1, 1.0, LeftHand, false, false, line!());
     value_state_check(grab - 0.1, 1.0, RightHand, false, false, line!());
 
