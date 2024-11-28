@@ -159,24 +159,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bindings = process_and_versionify_types(bindings.to_string().parse().unwrap());
     let path = std::env::var("OUT_DIR")? + "/bindings.rs";
     std::fs::write(&path, bindings).unwrap();
-
-    // cfg(test) doesn't work in build scripts for some reason
-    // https://github.com/rust-lang/cargo/issues/4789
-    #[cfg(not(feature = "unittest"))]
-    {
-        // NOTE: we're statically linking the loader to work around Proton
-        // see https://github.com/ValveSoftware/Proton/issues/7905
-        let dst = cmake::Config::new("openxr-sdk")
-            .define("DYNAMIC_LOADER", "OFF")
-            .define("BUILD_WITH_SYSTEM_JSONCPP", "OFF")
-            .cxxflag("-std=c++20")
-            .build();
-
-        println!("cargo:rustc-link-search=native={}/lib", dst.display());
-        println!("cargo:rustc-link-lib=static=openxr_loader");
-        println!("cargo:rustc-link-lib=static:+whole-archive=stdc++");
-    }
-    println!("cargo:rustc-link-arg=-Wl,--no-undefined");
     Ok(())
 }
 

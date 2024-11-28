@@ -11,13 +11,10 @@ crate-type = ["cdylib"]
 
 [workspace.dependencies]
 ash = "0.38.0"
-openxr = { git = "https://github.com/ralith/openxrs", rev = "d8ea555", version = "0.19.0", default-features = false, features = ["linked"] }
-openxr-sys = { git = "https://github.com/ralith/openxrs", rev = "d8ea555", version = "0.11.0" }
+openxr = { git = "https://github.com/ralith/openxrs", rev = "d0afdd3", version = "0.19.0", features = ["static"] }
+openxr-sys = { git = "https://github.com/ralith/openxrs", rev = "d0afdd3", version = "0.11.0" }
 slotmap = "1.0.7"
 glam = "0.29.0"
-
-[features]
-unittest = []
 
 [dependencies]
 arc-swap = "1.7.1"
@@ -46,5 +43,4 @@ syn = { version = "2.0.71", features = ["full"] }
 [dev-dependencies]
 libloading = "0.8.5"
 test-cdylib = "1.1.0"
-xrizer = { path = ".", features = ["unittest"] }
 fakexr = { path = "fakexr" }
