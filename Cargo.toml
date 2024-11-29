@@ -8,6 +8,7 @@ resolver = "2"
 crate-type = ["cdylib"]
 
 [workspace]
+members = ["xbuild"]
 
 [workspace.dependencies]
 ash = "0.38.0"

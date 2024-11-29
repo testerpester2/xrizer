@@ -341,6 +341,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
 
 [[package]]
+name = "nanoserde"
+version = "0.2.0-beta.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ded0298c4eb446523600e4d321834a5a80df610155141d20f181bb92bd784fb1"
+dependencies = [
+ "nanoserde-derive",
+]
+
+[[package]]
+name = "nanoserde-derive"
+version = "0.2.0-beta.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6da7f91479ba914a1b94a9b16479910adf24889f4162baebf1015b58b086ab43"
+
+[[package]]
 name = "ndk-context"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -736,6 +751,13 @@ name = "windows_x86_64_msvc"
 version = "0.52.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
+
+[[package]]
+name = "xbuild"
+version = "0.1.0"
+dependencies = [
+ "nanoserde",
+]
 
 [[package]]
 name = "xrizer"
