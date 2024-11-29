@@ -66,6 +66,10 @@
 		{
 			"binding_url": "knuckles.json",
 			"controller_type": "knuckles"
+		},
+		{
+			"binding_url": "oculus.json",
+			"controller_type": "oculus_touch"
 		}
 	],
 	"localization": []

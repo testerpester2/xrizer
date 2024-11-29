@@ -3,6 +3,7 @@ use super::{
         BoolActionData, DpadData, DpadDirection, FloatActionData, GrabBindingData, ToggleData,
     },
     knuckles::Knuckles,
+    oculus_touch::Touch,
     vive_controller::ViveWands,
     BoundPoseType, Input,
 };
@@ -166,6 +167,7 @@ struct DefaultBindings {
 enum ControllerType {
     ViveController,
     Knuckles,
+    OculusTouch,
     #[serde(untagged)]
     Unknown(String),
 }
@@ -761,14 +763,15 @@ impl<C: openxr_data::Compositor> Input<C> {
                     }
                 }
                 ControllerType::Knuckles => load_bindings!(Knuckles),
+                ControllerType::OculusTouch => load_bindings!(Touch),
                 ControllerType::Unknown(ref other) => {
-                    warn!("Ignoring bindings for unknown profile {other}")
+                    info!("Ignoring bindings for unknown profile {other}")
                 }
             }
 
             it = Box::new(it.skip_while(move |b| {
                 if b.controller_type == controller_type {
-                    debug!("skipping bindings in {:?}", b.binding_url);
+                    info!("skipping bindings in {:?}", b.binding_url);
                     true
                 } else {
                     false

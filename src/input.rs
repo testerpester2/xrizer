@@ -1,9 +1,11 @@
 mod action_manifest;
-mod knuckles;
-mod simple_controller;
 mod skeletal;
-mod vive_controller;
 mod custom_bindings;
+
+mod simple_controller;
+mod vive_controller;
+mod knuckles;
+mod oculus_touch;
 #[cfg(test)]
 mod tests;
 
