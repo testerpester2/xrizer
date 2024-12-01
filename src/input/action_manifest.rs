@@ -480,8 +480,8 @@ enum ActionBinding {
     Button {
         path: String,
         inputs: ButtonInput,
-        #[serde(rename = "parameters")]
-        _parameters: Option<ButtonParameters>,
+        #[allow(unused)]
+        parameters: Option<ButtonParameters>,
     },
     ToggleButton {
         path: String,
@@ -503,8 +503,8 @@ enum ActionBinding {
     ForceSensor {
         path: String,
         inputs: ForceSensorInput,
-        #[serde(rename = "parameters")]
-        _parameters: Option<ForceSensorParameters>,
+        #[allow(unused)]
+        parameters: Option<ForceSensorParameters>,
     },
     Grab {
         path: String,
@@ -623,18 +623,12 @@ struct GrabInput {
 
 #[derive(Deserialize)]
 struct GrabParameters {
-    #[serde(
-        default,
-        rename = "value_hold_threshold",
-        deserialize_with = "grab_threshold"
-    )]
-    _value_hold_threshold: Option<f32>,
-    #[serde(
-        default,
-        rename = "value_release_threshold",
-        deserialize_with = "grab_threshold"
-    )]
-    _value_release_threshold: Option<f32>,
+    #[allow(unused)]
+    #[serde(default, deserialize_with = "grab_threshold")]
+    value_hold_threshold: Option<f32>,
+    #[allow(unused)]
+    #[serde(default, deserialize_with = "grab_threshold")]
+    value_release_threshold: Option<f32>,
 }
 
 fn grab_threshold<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<f32>, D::Error> {
@@ -1282,7 +1276,7 @@ fn handle_sources(
                     ForceSensorInput {
                         force: ActionBindingOutput { output },
                     },
-                _parameters,
+                ..
             } => {
                 let Ok(translated) =
                     path_translator(&format!("{path}/force")).inspect_err(translate_warn(output))
