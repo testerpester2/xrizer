@@ -93,7 +93,8 @@ struct MailboxHandle(u64);
 
 // IVRMailbox - used by Alyx, only seems to be documnted here:
 // https://github.com/ValveSoftware/Proton/blob/proton_9.0/vrclient_x64/openvr_v1.10.30/openvr.h#L5108
-// See also OpenComposite's BaseMailbox.
+// This implementation is adapted from OpenComposite:
+// https://gitlab.com/znixian/OpenOVR/-/blob/34311dabf430d6051d7e97f6081842a5394d2a67/OpenOVR/Reimpl/BaseMailbox.cpp
 gen_vtable! {
     struct Mailbox {
         fn undoc1(a: *const c_char, b: *mut MailboxHandle) -> c_int {
