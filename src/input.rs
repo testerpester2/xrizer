@@ -1,13 +1,13 @@
 mod action_manifest;
-mod skeletal;
 mod custom_bindings;
+mod skeletal;
 
-mod simple_controller;
-mod vive_controller;
 mod knuckles;
 mod oculus_touch;
+mod simple_controller;
 #[cfg(test)]
 mod tests;
+mod vive_controller;
 
 use crate::{
     convert::space_relation_to_openvr_pose,

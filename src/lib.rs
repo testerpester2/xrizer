@@ -85,9 +85,14 @@ fn init_logging() {
 
     ONCE.call_once(|| {
         let mut builder = env_logger::Builder::new();
+        #[allow(unused_mut)]
+        let mut startup_err: Option<String> = None;
+
         #[cfg(not(test))]
         {
-            struct ComboWriter(std::fs::File, std::io::Stdout);
+            use std::path::Path;
+
+            struct ComboWriter(std::fs::File, std::io::Stderr);
 
             impl std::io::Write for ComboWriter {
                 fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
@@ -101,9 +106,32 @@ fn init_logging() {
                 }
             }
 
-            let file = std::fs::File::create("/tmp/xrizer.txt").unwrap();
-            let writer = ComboWriter(file, std::io::stdout());
-            builder.target(env_logger::Target::Pipe(Box::new(writer)));
+            let state_dir = std::env::var("XDG_STATE_HOME")
+                .or_else(|_| std::env::var("HOME").map(|h| h + "/.local/state"));
+
+            if let Ok(state) = state_dir {
+                let path = Path::new(&state).join("xrizer");
+                let mut setup = || {
+                    let path = path.join("xrizer.txt");
+                    match std::fs::File::create(path) {
+                        Ok(file) => {
+                            let writer = ComboWriter(file, std::io::stderr());
+                            builder.target(env_logger::Target::Pipe(Box::new(writer)));
+                        }
+                        Err(e) => startup_err = Some(format!("Failed to create log file: {e:?}")),
+                    }
+                };
+
+                match std::fs::create_dir_all(&path) {
+                    Ok(_) => setup(),
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => setup(),
+                    err => {
+                        startup_err = Some(format!(
+                            "Failed to create log directory ({path:?}): {err:?}"
+                        ))
+                    }
+                }
+            }
 
             std::panic::set_hook(Box::new(|info| {
                 log::error!("{info}");
@@ -142,9 +170,12 @@ fn init_logging() {
                 writeln!(buf, " {:?}] {}", std::thread::current().id(), record.args())
             })
             .init();
-    });
 
-    log::info!("Initializing XRizer");
+        log::info!("Initializing XRizer");
+        if let Some(err) = startup_err {
+            log::warn!("{err}");
+        }
+    });
 }
 
 /// # Safety

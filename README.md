@@ -48,7 +48,9 @@ For more info on the container, see [Valve's docs on Pressure Vessel](https://gi
 
 # Contributing
 
-All contributions welcome. If submitting pull requests, please consider writing a test if possible - OpenVR is a large API surface and games are fickle, so ensuring things are well tested prevents future unintentional breakage.
+All contributions welcome.
+- If you're opening a bug and asked for a log, the log is located at `$XDG_STATE_HOME/xrizer/xrizer.txt`, or `$HOME/.local/state/xrizer/xrizer.txt` if `$XDG_STATE_HOME` is not set.
+- If submitting pull requests, please consider writing a test if possible - OpenVR is a large API surface and games are fickle, so ensuring things are well tested prevents future unintentional breakage.
 
 # See also
 
