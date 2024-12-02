@@ -102,7 +102,10 @@
 							"output": "/actions/set1/in/boolact"
 						}
 					},
-					"parameters": {},
+					"parameters": {
+						"value_hold_threshold": "1.15",
+						"value_release_threshold": "1.16"
+					},
 					"mode": "grab",
 					"path": "/user/hand/right/input/grip"
 				},

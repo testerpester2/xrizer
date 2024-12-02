@@ -22,6 +22,7 @@ use std::cell::{LazyCell, RefCell};
 use std::collections::HashMap;
 use std::ffi::CStr;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::RwLock;
 
 impl<C: openxr_data::Compositor> Input<C> {
@@ -495,6 +496,8 @@ enum ActionBinding {
     Trigger {
         path: String,
         inputs: TriggerInput,
+        #[allow(unused)]
+        parameters: Option<ClickThresholdParams>,
     },
     ScalarConstant {
         path: String,
@@ -523,6 +526,31 @@ enum ActionBinding {
     Joystick(Vector2Mode),
 }
 
+#[repr(transparent)]
+struct FromString<T>(T);
+
+impl<T: FromStr> FromStr for FromString<T> {
+    type Err = T::Err;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        T::from_str(s).map(Self)
+    }
+}
+
+impl<'de, T: Deserialize<'de> + FromStr> Deserialize<'de> for FromString<T> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let ret = <&str>::deserialize(deserializer)?;
+        ret.parse().map_err(|_| {
+            D::Error::custom(format_args!(
+                "invalid value: expected {}, got {ret}",
+                std::any::type_name::<T>()
+            ))
+        })
+    }
+}
+
 #[derive(Deserialize)]
 struct ButtonInput {
     click: Option<ActionBindingOutput>,
@@ -530,9 +558,20 @@ struct ButtonInput {
 }
 
 #[derive(Deserialize)]
+struct ClickThresholdParams {
+    #[allow(unused)]
+    click_activate_threshold: Option<FromString<f32>>,
+    #[allow(unused)]
+    click_deactivate_threshold: Option<FromString<f32>>,
+}
+
+#[derive(Deserialize)]
 struct ButtonParameters {
     #[allow(unused)]
     force_input: Option<String>,
+    #[allow(unused)]
+    #[serde(flatten)]
+    click_threshold: ClickThresholdParams,
 }
 
 #[derive(Deserialize, Debug)]
@@ -548,21 +587,18 @@ struct DpadInput {
 #[serde(default)]
 struct DpadParameters {
     sub_mode: DpadSubMode,
-    #[serde(deserialize_with = "parse_pct")]
-    deadzone_pct: u8,
-    #[serde(deserialize_with = "parse_pct")]
-    overlap_pct: u8,
-    #[serde(deserialize_with = "as_bool")]
-    sticky: bool,
+    deadzone_pct: FromString<u8>,
+    overlap_pct: FromString<u8>,
+    sticky: FromString<bool>,
 }
 
 impl Default for DpadParameters {
     fn default() -> Self {
         Self {
             sub_mode: DpadSubMode::Touch,
-            deadzone_pct: 50,
-            overlap_pct: 50,
-            sticky: false,
+            deadzone_pct: FromString(50),
+            overlap_pct: FromString(50),
+            sticky: FromString(false),
         }
     }
 }
@@ -572,25 +608,6 @@ impl Default for DpadParameters {
 enum DpadSubMode {
     Click,
     Touch,
-}
-
-fn parse_pct<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u8, D::Error> {
-    let val: &str = Deserialize::deserialize(d)?;
-    val.parse().map_err(|e| {
-        D::Error::invalid_value(Unexpected::Str(val), &format!("a valid u8 ({e})").as_str())
-    })
-}
-
-fn as_bool<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
-    let val: &str = Deserialize::deserialize(d)?;
-    match val {
-        "true" => Ok(true),
-        "false" => Ok(false),
-        other => Err(D::Error::invalid_value(
-            Unexpected::Str(other),
-            &"true or false",
-        )),
-    }
 }
 
 #[derive(Deserialize)]
@@ -624,19 +641,9 @@ struct GrabInput {
 #[derive(Deserialize)]
 struct GrabParameters {
     #[allow(unused)]
-    #[serde(default, deserialize_with = "grab_threshold")]
-    value_hold_threshold: Option<f32>,
+    value_hold_threshold: Option<FromString<f32>>,
     #[allow(unused)]
-    #[serde(default, deserialize_with = "grab_threshold")]
-    value_release_threshold: Option<f32>,
-}
-
-fn grab_threshold<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<f32>, D::Error> {
-    let val: &str = Deserialize::deserialize(d)?;
-    match val.parse() {
-        Ok(v) => Ok(Some(v)),
-        Err(e) => Err(D::Error::custom(e)),
-    }
+    value_release_threshold: Option<FromString<f32>>,
 }
 
 #[derive(Deserialize)]
@@ -1225,6 +1232,7 @@ fn handle_sources(
             ActionBinding::Trigger {
                 path,
                 inputs: TriggerInput { pull, touch, click },
+                ..
             } => {
                 let suffixes_and_outputs = [("pull", pull), ("touch", touch), ("click", click)]
                     .into_iter()
