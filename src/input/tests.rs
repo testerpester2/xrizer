@@ -748,28 +748,46 @@ fn pose_action_no_restrict() {
 fn cased_actions() {
     let f = Fixture::new();
     let set1 = f.get_action_set_handle(c"/actions/set1");
-    // TODO: do the rest of the action types?
-    let boolact = f.get_action_handle(c"/actions/set1/in/BoolAct");
     f.load_actions(c"actions_cased.json");
 
+    let path = ViveWands::PROFILE_PATH;
     f.verify_bindings::<bool>(
-        ViveWands::PROFILE_PATH,
+        path,
         c"/actions/set1/in/BoolAct",
         ["/user/hand/left/input/squeeze/click".into()],
     );
-
-    fakexr::set_action_state(
-        f.get_action::<bool>(boolact),
-        fakexr::ActionState::Bool(true),
-        LeftHand,
+    f.verify_bindings::<f32>(
+        path,
+        c"/actions/set1/in/Vec1Act",
+        ["/user/hand/left/input/trigger/value".into()],
     );
+    f.verify_bindings::<xr::Vector2f>(
+        path,
+        c"/actions/set1/in/Vec2Act",
+        ["/user/hand/left/input/trackpad".into()],
+    );
+    f.verify_bindings::<xr::Haptic>(
+        path,
+        c"/actions/set1/in/VibAct",
+        ["/user/hand/left/output/haptic".into()],
+    );
+
+    f.set_interaction_profile::<ViveWands>(LeftHand);
+    let session = f.input.openxr.session_data.get().session.as_raw();
+    fakexr::set_grip(session, LeftHand, xr::Posef::IDENTITY);
+    fakexr::set_aim(session, LeftHand, xr::Posef::IDENTITY);
     f.sync(vr::VRActiveActionSet_t {
         ulActionSet: set1,
         ..Default::default()
     });
 
-    let state = f.get_bool_state(boolact).unwrap();
-    assert!(state.bActive);
-    assert!(state.bState);
-    assert!(state.bChanged);
+    let poseact = f.get_action_handle(c"/actions/set1/in/PoseAct");
+    let pose = f.get_pose(poseact, 0).unwrap();
+    assert!(pose.bActive);
+    assert!(pose.pose.bPoseIsValid);
+
+    let skelact = f.get_action_handle(c"/actions/set1/in/SkelAct");
+    let pose = f.get_pose(skelact, 0).unwrap();
+    assert!(pose.bActive);
+    assert!(pose.pose.bPoseIsValid);
 }

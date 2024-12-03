@@ -402,9 +402,39 @@ struct ActionSetBinding {
     skeleton: Option<Vec<SkeletonActionBinding>>,
 }
 
+#[repr(transparent)]
+#[derive(Hash, Eq, PartialEq)]
+struct LowercaseActionPath(String);
+impl std::fmt::Debug for LowercaseActionPath {
+    #[inline]
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+impl std::fmt::Display for LowercaseActionPath {
+    #[inline]
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+impl std::ops::Deref for LowercaseActionPath {
+    type Target = String;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl<'de> Deserialize<'de> for LowercaseActionPath {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        String::deserialize(deserializer).map(|s| Self(s.to_ascii_lowercase()))
+    }
+}
+
 #[derive(Deserialize)]
 struct PoseBinding {
-    output: String,
+    output: LowercaseActionPath,
     #[serde(deserialize_with = "parse_pose_binding")]
     path: (Hand, BoundPoseType),
 }
@@ -441,13 +471,13 @@ fn parse_pose_binding<'de, D: serde::Deserializer<'de>>(
 
 #[derive(Deserialize)]
 struct SimpleActionBinding {
-    output: String,
+    output: LowercaseActionPath,
     path: String,
 }
 
 #[derive(Deserialize)]
 struct SkeletonActionBinding {
-    output: String,
+    output: LowercaseActionPath,
     #[serde(deserialize_with = "path_to_skeleton")]
     path: Hand,
 }
@@ -464,14 +494,9 @@ fn path_to_skeleton<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Hand, D::E
     }
 }
 
-fn to_lowercase<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
-    <&str>::deserialize(d).map(|s| s.to_ascii_lowercase())
-}
-
 #[derive(Deserialize, Debug)]
 struct ActionBindingOutput {
-    #[serde(deserialize_with = "to_lowercase")]
-    output: String,
+    output: LowercaseActionPath,
 }
 
 #[derive(Deserialize)]
@@ -918,7 +943,7 @@ fn handle_dpad_binding(
         f
     }
     let maybe_find_action = constrain(|a, direction| {
-        let output = &a.as_ref()?.output;
+        let output = &a.as_ref()?.output.0;
         let ret = actions.contains_key(output);
         if !ret {
             warn!(
@@ -1166,7 +1191,7 @@ fn handle_sources(
                             continue;
                         }
 
-                        let mut data = actions.remove(output).unwrap();
+                        let mut data = actions.remove(&output.0).unwrap();
                         let name_only = output.rsplit_once('/').unwrap().1;
                         let toggle_name = format!("{name_only}_tgl");
 
@@ -1351,7 +1376,7 @@ fn handle_sources(
                     GrabBindingData::new(force_action, value_action, hands)
                 };
 
-                let mut data = actions.remove(output).unwrap();
+                let mut data = actions.remove(&output.0).unwrap();
                 match &mut data {
                     super::ActionData::Bool(data) => {
                         if data.grab_data.is_none() {
@@ -1417,7 +1442,7 @@ fn handle_sources(
 
                 if let Some(position) = position.as_ref() {
                     try_get_binding(
-                        position.output.clone(),
+                        position.output.to_string(),
                         translated,
                         action_match!(Vector2 { .. }),
                     );
@@ -1435,7 +1460,7 @@ fn handle_skeleton_bindings(actions: &LoadedActionDataMap, bindings: &[SkeletonA
             continue;
         };
 
-        match &actions[output] {
+        match &actions[&output.0] {
             super::ActionData::Skeleton { hand, .. } => assert_eq!(hand, path),
             _ => panic!("Expected skeleton action for skeleton binding {output}"),
         }
@@ -1459,13 +1484,13 @@ fn handle_haptic_bindings(
         };
 
         assert!(
-            matches!(actions[output], super::ActionData::Haptic(_)),
+            matches!(actions[&output.0], super::ActionData::Haptic(_)),
             "expected haptic action for haptic binding {}, got {}",
             translated,
             output
         );
         let xr_path = instance.string_to_path(&translated).unwrap();
-        ret.push((output.clone(), xr_path));
+        ret.push((output.0.clone(), xr_path));
     }
 
     ret
@@ -1485,7 +1510,7 @@ fn handle_pose_bindings(
             continue;
         };
 
-        let super::ActionData::Pose { bindings, .. } = actions.get_mut(output).unwrap() else {
+        let super::ActionData::Pose { bindings, .. } = actions.get_mut(&output.0).unwrap() else {
             panic!("Expected pose action for pose binding on {output}");
         };
 
