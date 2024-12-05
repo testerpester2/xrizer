@@ -1,5 +1,4 @@
 use crate::vr;
-use arc_swap::ArcSwapOption;
 use ash::vk::{self, Handle};
 use openxr as xr;
 use std::ffi::{c_char, CString};
@@ -18,7 +17,7 @@ pub struct VulkanData {
     pub device: ash::Device,
     pub queue: vk::Queue,
     pub queue_family_index: u32,
-    real_data: ArcSwapOption<RealSessionData>,
+    real_data: Option<RealSessionData>,
 }
 
 impl Drop for VulkanData {
@@ -26,7 +25,7 @@ impl Drop for VulkanData {
         unsafe {
             self.device.device_wait_idle().unwrap();
         }
-        match &*self.real_data.load() {
+        match &self.real_data {
             // Temporary session - we created these handles, so let's destroy them
             None => unsafe {
                 self.device.destroy_device(None);
@@ -85,11 +84,9 @@ impl VulkanData {
                 (texture, None)
             };
 
-        let guard = self.real_data.load();
-        let data = guard.as_ref().unwrap();
+        let data = self.real_data.as_ref().unwrap();
         let swapchain_image = data.images[image_index];
         let buf = data.bufs[2 * image_index + eye as usize];
-        drop(guard);
 
         let (extent, offset) = texture_extent_from_bounds(texture, bounds);
         log::trace!("{:?} extent: {:?}", eye, extent);
@@ -244,7 +241,7 @@ impl VulkanData {
         }
     }
 
-    pub fn post_swapchain_create(&self, images: Vec<vk::Image>) {
+    pub fn post_swapchain_create(&mut self, images: Vec<vk::Image>) {
         let pool = unsafe {
             self.device
                 .create_command_pool(
@@ -269,7 +266,7 @@ impl VulkanData {
 
         if let Some(data) = self
             .real_data
-            .swap(Some(RealSessionData { images, pool, bufs }.into()))
+            .replace(RealSessionData { images, pool, bufs })
         {
             unsafe {
                 self.device.destroy_command_pool(data.pool, None);

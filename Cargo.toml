@@ -18,7 +18,6 @@ slotmap = "1.0.7"
 glam = "0.29.0"
 
 [dependencies]
-arc-swap = "1.7.1"
 ash = { workspace = true }
 env_logger = "0.11.5"
 glam = { workspace = true }

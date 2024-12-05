@@ -125,6 +125,13 @@ pub fn get_suggested_bindings(action: xr::Action, profile: xr::Path) -> Vec<Stri
         .collect()
 }
 
+pub fn should_render_next_frame(instance: xr::Instance, should_render: bool) {
+    let instance = instance.to_handle().unwrap();
+    instance
+        .should_render
+        .store(should_render, Ordering::Relaxed)
+}
+
 macro_rules! fn_unimplemented_impl {
     ($($param:ident),+) => {
         fn_unimplemented_impl!($($param),+  -> []);
@@ -369,6 +376,7 @@ struct Instance {
     event_sender: mpsc::Sender<EventDataBuffer>,
     paths: Mutex<SlotMap<DefaultKey, String>>,
     string_to_path: Mutex<HashMap<String, DefaultKey>>,
+    should_render: AtomicBool,
 }
 
 impl Instance {
@@ -601,6 +609,7 @@ extern "system" fn create_instance(
         event_sender: tx,
         paths: Mutex::new(paths),
         string_to_path: Mutex::new(string_to_path),
+        should_render: false.into(),
     });
     unsafe {
         *instance = inst.to_xr();
@@ -1328,17 +1337,19 @@ extern "system" fn release_swapchain_image(
 }
 
 extern "system" fn wait_frame(
-    _session: xr::Session,
+    session: xr::Session,
     _info: *const xr::FrameWaitInfo,
     state: *mut xr::FrameState,
 ) -> xr::Result {
+    let session = get_handle!(session);
+    let instance = session.instance.upgrade().unwrap();
     unsafe {
         state.write(xr::FrameState {
             ty: xr::FrameState::TYPE,
             next: std::ptr::null_mut(),
             predicted_display_time: xr::Time::from_nanos(1),
             predicted_display_period: xr::Duration::from_nanos(1),
-            should_render: false.into(),
+            should_render: instance.should_render.load(Ordering::Relaxed).into(),
         })
     }
     xr::Result::SUCCESS

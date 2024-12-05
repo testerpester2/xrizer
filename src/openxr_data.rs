@@ -20,7 +20,10 @@ pub trait Compositor: crate::InterfaceImpl {
         stream: xr::FrameStream<xr::vulkan::Vulkan>,
     );
 
-    fn current_session_create_info(&self) -> xr::vulkan::SessionCreateInfo;
+    fn pre_session_restart(
+        &self,
+        data: crate::compositor::CompositorSessionData,
+    ) -> xr::vulkan::SessionCreateInfo;
 }
 
 pub type RealOpenXrData = OpenXrData<crate::compositor::Compositor>;
@@ -169,15 +172,15 @@ impl<C: Compositor> OpenXrData<C> {
         let mut session_guard = self.session_data.0.write().unwrap();
 
         let origin = session_guard.current_origin;
-        // We need to destroy the old session before creating the new one.
-        let _ = unsafe { ManuallyDrop::take(&mut *session_guard) };
-
         let comp = self
             .compositor
             .get()
             .expect("Session is being restarted, but compositor has not been set up!");
 
-        let info = comp.current_session_create_info();
+        let info = comp.pre_session_restart(std::mem::take(&mut session_guard.comp_data));
+
+        // We need to destroy the old session before creating the new one.
+        let _ = unsafe { ManuallyDrop::take(&mut *session_guard) };
 
         let (session, waiter, stream) =
             SessionData::new(&self.instance, self.system_id, origin, Some(&info))

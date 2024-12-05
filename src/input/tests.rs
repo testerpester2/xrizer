@@ -42,7 +42,10 @@ impl crate::InterfaceImpl for FakeCompositor {
     }
 }
 impl crate::openxr_data::Compositor for FakeCompositor {
-    fn current_session_create_info(&self) -> openxr::vulkan::SessionCreateInfo {
+    fn pre_session_restart(
+        &self,
+        _: crate::compositor::CompositorSessionData,
+    ) -> openxr::vulkan::SessionCreateInfo {
         self.0.as_session_create_info()
     }
     fn init_frame_controller(

@@ -5,11 +5,10 @@ use crate::{
     vr,
     vulkan::VulkanData,
 };
-use arc_swap::ArcSwap;
 use ash::vk::{self, Handle};
 use log::{debug, info, trace};
 use openxr as xr;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 struct FrameController {
     stream: xr::FrameStream<xr::vulkan::Vulkan>,
@@ -19,6 +18,7 @@ struct FrameController {
     image_acquired: bool,
     should_render: bool,
     eyes_submitted: [Option<SubmittedEye>; 2],
+    backend: GraphicsApi,
 }
 
 #[derive(Copy, Clone, Default)]
@@ -37,8 +37,8 @@ pub struct Compositor {
     vtables: Vtables,
     openxr: Arc<OpenXrData<Self>>,
     input: Injected<Input<Self>>,
-    backend: OnceLock<GraphicsApi>,
-    swapchain_create_info: ArcSwap<xr::SwapchainCreateInfo<xr::vulkan::Vulkan>>,
+    tmp_backend: Mutex<Option<GraphicsApi>>,
+    swapchain_create_info: Mutex<xr::SwapchainCreateInfo<xr::vulkan::Vulkan>>,
 }
 
 impl Compositor {
@@ -47,8 +47,8 @@ impl Compositor {
             vtables: Default::default(),
             openxr,
             input: injector.inject(),
-            backend: Default::default(),
-            swapchain_create_info: ArcSwap::new(
+            tmp_backend: Mutex::default(),
+            swapchain_create_info: Mutex::new(
                 // This will be overwritten before actually creating our swapchain.
                 xr::SwapchainCreateInfo {
                     create_flags: Default::default(),
@@ -60,8 +60,7 @@ impl Compositor {
                     face_count: 0,
                     array_size: 0,
                     mip_count: 0,
-                }
-                .into(),
+                },
             ),
         }
     }
@@ -101,20 +100,31 @@ impl Compositor {
 
     fn initialize_real_session(&self, texture: &vr::Texture_t, bounds: vr::VRTextureBounds_t) {
         let backend = GraphicsApi::new(texture);
-        self.swapchain_create_info
-            .store(backend.get_swapchain_create_info(texture, bounds).into());
+        *self.swapchain_create_info.lock().unwrap() =
+            backend.get_swapchain_create_info(texture, bounds);
 
-        self.backend.set(backend).unwrap_or_else(|_| unreachable!());
+        *self.tmp_backend.lock().unwrap() = Some(backend);
 
         self.openxr.restart_session(); // calls init_frame_controller
     }
 }
 
 impl openxr_data::Compositor for Compositor {
-    fn current_session_create_info(&self) -> openxr::vulkan::SessionCreateInfo {
-        self.backend
-            .get()
-            .expect("Backend is not set up!")
+    fn pre_session_restart(
+        &self,
+        data: CompositorSessionData,
+    ) -> openxr::vulkan::SessionCreateInfo {
+        self.tmp_backend
+            .lock()
+            .unwrap()
+            .get_or_insert_with(|| {
+                data.0
+                    .lock()
+                    .unwrap()
+                    .take()
+                    .expect("one of tmp backend or frame controller should be setup")
+                    .backend
+            })
             .as_session_create_info()
     }
 
@@ -127,14 +137,16 @@ impl openxr_data::Compositor for Compositor {
         // This function is called while a write lock is called on the session, and as such should
         // not use self.openxr.session_data.get().
 
-        let backend = self
-            .backend
-            .get()
-            .expect("Backend should be set up before initializing frame controller");
+        let mut backend = self
+            .tmp_backend
+            .lock()
+            .unwrap()
+            .take()
+            .expect("tmp backend should be set before init_frame_controller is called");
 
         let swapchain = session_data
             .session
-            .create_swapchain(&*self.swapchain_create_info.load())
+            .create_swapchain(&self.swapchain_create_info.lock().unwrap())
             .expect("Failed to create swapchain");
 
         let images: Vec<vk::Image> = swapchain
@@ -154,6 +166,7 @@ impl openxr_data::Compositor for Compositor {
             image_acquired: false,
             should_render: false,
             eyes_submitted: Default::default(),
+            backend,
         });
 
         self.maybe_start_frame(session_data);
@@ -453,15 +466,23 @@ impl vr::IVRCompositor028_Interface for Compositor {
 
         ctrl.eyes_submitted[eye as usize] = if ctrl.should_render {
             // Make sure our image dimensions haven't changed.
-            let backend = &self.backend.get().unwrap();
-            let last_info = self.swapchain_create_info.load();
-            if !backend.is_usable_swapchain(&last_info, texture, bounds) {
+            let mut last_info = self.swapchain_create_info.lock().unwrap();
+            if !ctrl
+                .backend
+                .is_usable_swapchain(&last_info, texture, bounds)
+            {
                 info!("recreating swapchain (for {eye:?})");
-                self.swapchain_create_info
-                    .store(backend.get_swapchain_create_info(texture, bounds).into());
-                let FrameController { stream, waiter, .. } = frame_lock.take().unwrap();
+                *last_info = ctrl.backend.get_swapchain_create_info(texture, bounds);
+                let FrameController {
+                    stream,
+                    waiter,
+                    backend,
+                    ..
+                } = frame_lock.take().unwrap();
                 drop(frame_lock);
                 drop(session_lock);
+                drop(last_info);
+                *self.tmp_backend.lock().unwrap() = Some(backend);
                 // init_frame_controller eventually calls xrBeginFrame again without calling
                 // xrEndFrame, but this is legal.
                 <Self as openxr_data::Compositor>::init_frame_controller(
@@ -475,7 +496,7 @@ impl vr::IVRCompositor028_Interface for Compositor {
                 ctrl = frame_lock.as_mut().unwrap()
             }
             Some(SubmittedEye {
-                extent: self.backend.get().unwrap().copy_texture_to_swapchain(
+                extent: ctrl.backend.copy_texture_to_swapchain(
                     eye,
                     texture,
                     bounds,
@@ -713,7 +734,7 @@ impl GraphicsApi {
             && create_info.sample_count == new_info.sample_count
     }
 
-    fn post_swapchain_create(&self, images: Vec<vk::Image>) {
+    fn post_swapchain_create(&mut self, images: Vec<vk::Image>) {
         match self {
             Self::Vulkan(vk) => vk.post_swapchain_create(images),
             #[cfg(test)]
@@ -722,7 +743,7 @@ impl GraphicsApi {
     }
 
     fn copy_texture_to_swapchain(
-        &self,
+        &mut self,
         eye: vr::EVREye,
         texture: &vr::Texture_t,
         bounds: vr::VRTextureBounds_t,
@@ -736,7 +757,7 @@ impl GraphicsApi {
                 vk.copy_texture_to_swapchain(eye, vk_texture, bounds, image_index, submit_flags)
             }
             #[cfg(test)]
-            Self::Fake(_) => unreachable!(),
+            Self::Fake(_) => xr::Extent2Di::default(),
         }
     }
 }
@@ -744,10 +765,15 @@ impl GraphicsApi {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+    use std::thread_local;
     use vr::EVRCompositorError::*;
     use vr::IVRCompositor028_Interface;
 
     pub struct FakeGraphicsData(Arc<VulkanData>);
+    thread_local! {
+        static WIDTH: Cell<u32> = Cell::new(10);
+    }
 
     impl FakeGraphicsData {
         fn texture(data: &Arc<VulkanData>) -> vr::Texture_t {
@@ -779,7 +805,7 @@ mod tests {
                 usage_flags: xr::SwapchainUsageFlags::EMPTY,
                 format: 0,
                 sample_count: 1,
-                width: 10,
+                width: WIDTH.get(),
                 height: 10,
                 face_count: 1,
                 array_size: 2,
@@ -914,5 +940,16 @@ mod tests {
 
         assert_eq!(f.wait_get_poses(), None);
         assert_eq!(f.wait_get_poses(), None);
+    }
+
+    #[test]
+    fn recreate_swapchain() {
+        let f = Fixture::new();
+        fakexr::should_render_next_frame(f.comp.openxr.instance.as_raw(), true);
+
+        assert_eq!(f.wait_get_poses(), None);
+        assert_eq!(f.submit(vr::EVREye::Left), None);
+        WIDTH.set(40);
+        assert_eq!(f.submit(vr::EVREye::Right), None);
     }
 }
