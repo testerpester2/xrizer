@@ -1,6 +1,6 @@
-use openvr as vr;
 use ash::vk::{self, Handle};
 use log::warn;
+use openvr as vr;
 use openxr as xr;
 use std::ffi::{c_char, CString};
 
@@ -635,7 +635,7 @@ impl PipelineData {
             };
 
             (
-                ShaderModule(&device, module),
+                ShaderModule(device, module),
                 vk::PipelineShaderStageCreateInfo::default()
                     .stage(stage)
                     .module(module)

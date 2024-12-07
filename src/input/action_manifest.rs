@@ -7,11 +7,9 @@ use super::{
     vive_controller::ViveWands,
     BoundPoseType, Input,
 };
-use crate::{
-    openxr_data::{self, Hand, SessionData},
-};
-use openvr as vr;
+use crate::openxr_data::{self, Hand, SessionData};
 use log::{debug, error, info, trace, warn};
+use openvr as vr;
 use openxr as xr;
 use serde::{
     de::{Error, IgnoredAny, Unexpected},

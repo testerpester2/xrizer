@@ -2,11 +2,9 @@
 mod gen;
 
 use super::Input;
-use crate::{
-    openxr_data::{self, Hand, SessionData},
-};
-use openvr as vr;
+use crate::openxr_data::{self, Hand, SessionData};
 use glam::{Affine3A, Quat, Vec3};
+use openvr as vr;
 use openxr as xr;
 use paste::paste;
 use std::cell::RefCell;

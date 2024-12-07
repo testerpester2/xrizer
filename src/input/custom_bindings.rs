@@ -329,8 +329,8 @@ impl ToggleData {
 mod tests {
     use super::*;
     use crate::input::{tests::Fixture, ActionData};
-    use openvr as vr;
     use fakexr::UserPath::*;
+    use openvr as vr;
 
     macro_rules! get_toggle_action {
         ($fixture:expr, $handle:expr, $toggle_data:ident) => {
@@ -403,9 +403,9 @@ mod tests {
         });
 
         let state = f.get_bool_state(boolact).unwrap();
-        assert_eq!(state.bActive, true);
-        assert_eq!(state.bState, true);
-        assert_eq!(state.bChanged, true);
+        assert!(state.bActive);
+        assert!(state.bState);
+        assert!(state.bChanged);
 
         f.sync(vr::VRActiveActionSet_t {
             ulActionSet: set1,
@@ -413,9 +413,9 @@ mod tests {
         });
 
         let state = f.get_bool_state(boolact).unwrap();
-        assert_eq!(state.bActive, true);
-        assert_eq!(state.bState, true);
-        assert_eq!(state.bChanged, false);
+        assert!(state.bActive);
+        assert!(state.bState);
+        assert!(!state.bChanged);
 
         fakexr::set_action_state(
             dpad_data.parent.as_raw(),
@@ -428,9 +428,9 @@ mod tests {
         });
 
         let state = f.get_bool_state(boolact).unwrap();
-        assert_eq!(state.bActive, true);
-        assert_eq!(state.bState, false);
-        assert_eq!(state.bChanged, true);
+        assert!(state.bActive);
+        assert!(!state.bState);
+        assert!(state.bChanged);
     }
 
     #[test]
@@ -465,9 +465,9 @@ mod tests {
         });
 
         let state = f.get_bool_state(boolact).unwrap();
-        assert_eq!(state.bState, false);
-        assert_eq!(state.bActive, false);
-        assert_eq!(state.bChanged, false);
+        assert!(!state.bState);
+        assert!(!state.bActive);
+        assert!(!state.bChanged);
 
         fakexr::set_action_state(
             f.get_action::<bool>(boolact),
@@ -480,9 +480,9 @@ mod tests {
         });
 
         let state = f.get_bool_state(boolact).unwrap();
-        assert_eq!(state.bState, true);
-        assert_eq!(state.bActive, true);
-        assert_eq!(state.bChanged, true);
+        assert!(state.bState);
+        assert!(state.bActive);
+        assert!(state.bChanged);
     }
 
     #[test]
@@ -511,7 +511,7 @@ mod tests {
 
             let s = f.get_bool_state(boolact).unwrap();
             assert_eq!(s.bState, state, "state failed (line {line})");
-            assert_eq!(s.bActive, true, "active failed (line {line})");
+            assert!(s.bActive, "active failed (line {line})");
             assert_eq!(s.bChanged, changed, "changed failed (line {line})");
         };
 
@@ -559,7 +559,7 @@ mod tests {
             };
             let s = f.get_bool_state_hand(boolact, restrict).unwrap();
             assert_eq!(s.bState, state, "State wrong (line {line})");
-            assert_eq!(s.bActive, true, "Active wrong (line {line})");
+            assert!(s.bActive, "Active wrong (line {line})");
             assert_eq!(s.bChanged, changed, "Changed wrong (line {line})");
         };
 

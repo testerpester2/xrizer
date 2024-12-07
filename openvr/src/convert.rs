@@ -1,5 +1,5 @@
-use glam::{Affine3A, Mat3, Mat4, Quat, Vec3};
 use super::*;
+use glam::{Affine3A, Mat3, Mat4, Quat, Vec3};
 use openxr as xr;
 
 pub fn space_relation_to_openvr_pose(

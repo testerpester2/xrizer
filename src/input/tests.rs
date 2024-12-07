@@ -13,7 +13,7 @@ use std::f32::consts::FRAC_PI_4;
 use std::ffi::CStr;
 use std::sync::Arc;
 
-static ACTIONS_JSONS_DIR: &'static CStr = unsafe {
+static ACTIONS_JSONS_DIR: &CStr = unsafe {
     CStr::from_bytes_with_nul_unchecked(
         concat!(env!("CARGO_MANIFEST_DIR"), "/tests/input_data/\0").as_bytes(),
     )
@@ -426,9 +426,9 @@ fn input_state_flow() {
     });
 
     let state = f.get_bool_state(boolact).unwrap();
-    assert_eq!(state.bState, false);
-    assert_eq!(state.bActive, false);
-    assert_eq!(state.bChanged, false);
+    assert!(!state.bState);
+    assert!(!state.bActive);
+    assert!(!state.bChanged);
 
     f.sync(vr::VRActiveActionSet_t {
         ulActionSet: set1,
@@ -436,9 +436,9 @@ fn input_state_flow() {
     });
 
     let state = f.get_bool_state(boolact).unwrap();
-    assert_eq!(state.bState, false);
-    assert_eq!(state.bActive, false);
-    assert_eq!(state.bChanged, false);
+    assert!(!state.bState);
+    assert!(!state.bActive);
+    assert!(!state.bChanged);
 
     fakexr::set_action_state(
         f.get_action::<bool>(boolact),
@@ -452,9 +452,9 @@ fn input_state_flow() {
     });
 
     let state = f.get_bool_state(boolact).unwrap();
-    assert_eq!(state.bState, true);
-    assert_eq!(state.bActive, true);
-    assert_eq!(state.bChanged, true);
+    assert!(state.bState);
+    assert!(state.bActive);
+    assert!(state.bChanged);
 }
 
 #[test]
@@ -478,8 +478,8 @@ fn reload_manifest_on_session_restart() {
     });
 
     let state = f.get_bool_state(boolact).unwrap();
-    assert_eq!(state.bState, true);
-    assert_eq!(state.bActive, true);
+    assert!(state.bState);
+    assert!(state.bActive);
 }
 
 #[track_caller]
@@ -540,12 +540,12 @@ fn raw_pose_is_grip_at_aim() {
 
     let data = f.get_pose(pose_handle, left_hand).unwrap();
 
-    assert_eq!(data.bActive, true);
+    assert!(data.bActive);
     assert_eq!(data.activeOrigin, left_hand);
 
     let pose = data.pose;
-    assert_eq!(pose.bDeviceIsConnected, true);
-    assert_eq!(pose.bPoseIsValid, true);
+    assert!(pose.bDeviceIsConnected);
+    assert!(pose.bPoseIsValid);
     assert_eq!(pose.eTrackingResult, vr::ETrackingResult::Running_OK);
 
     compare_pose(
@@ -655,14 +655,14 @@ fn actions_with_bad_paths() {
     });
 
     let s = f.get_bool_state(spaces).unwrap();
-    assert_eq!(s.bActive, true);
-    assert_eq!(s.bState, true);
-    assert_eq!(s.bChanged, true);
+    assert!(s.bActive);
+    assert!(s.bState);
+    assert!(s.bChanged);
 
     let s = f.get_bool_state(mixed).unwrap();
-    assert_eq!(s.bActive, true);
-    assert_eq!(s.bState, true);
-    assert_eq!(s.bChanged, true);
+    assert!(s.bActive);
+    assert!(s.bState);
+    assert!(s.bChanged);
 
     let mut s = vr::InputAnalogActionData_t::default();
     let ret = f
@@ -670,7 +670,7 @@ fn actions_with_bad_paths() {
         .GetAnalogActionData(commas, &mut s, std::mem::size_of_val(&s) as u32, 0);
     assert_eq!(ret, vr::EVRInputError::None);
 
-    assert_eq!(s.bActive, true);
+    assert!(s.bActive);
     assert_eq!(s.x, 0.5);
 }
 

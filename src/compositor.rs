@@ -782,7 +782,7 @@ mod tests {
 
     pub struct FakeGraphicsData(Arc<VulkanData>);
     thread_local! {
-        static WIDTH: Cell<u32> = Cell::new(10);
+        static WIDTH: Cell<u32> = const { Cell::new(10) };
     }
 
     impl FakeGraphicsData {

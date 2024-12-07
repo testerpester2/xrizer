@@ -9,13 +9,11 @@ mod simple_controller;
 mod tests;
 mod vive_controller;
 
-use crate::{
-    openxr_data::{self, Hand, OpenXrData, SessionData},
-};
-use openvr::{self as vr, space_relation_to_openvr_pose};
+use crate::openxr_data::{self, Hand, OpenXrData, SessionData};
 use action_manifest::InteractionProfile;
 use custom_bindings::{BoolActionData, FloatActionData};
 use log::{debug, info, trace, warn};
+use openvr::{self as vr, space_relation_to_openvr_pose};
 use openxr as xr;
 use slotmap::{new_key_type, Key, KeyData, SecondaryMap, SlotMap};
 use std::collections::HashMap;
