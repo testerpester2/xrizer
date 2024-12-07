@@ -496,7 +496,7 @@ impl vr::IVRSystem022_Interface for System {
         match prop {
             vr::ETrackedDeviceProperty::UserIpdMeters_Float => {
                 let views = self.get_views();
-                views[1].pose.position.x - views[0].pose.position.y
+                views[1].pose.position.x - views[0].pose.position.x
             }
             vr::ETrackedDeviceProperty::DisplayFrequency_Float => 90.0,
             _ => {
