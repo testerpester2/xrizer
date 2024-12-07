@@ -2,7 +2,6 @@ mod applications;
 mod chaperone;
 mod clientcore;
 mod compositor;
-mod convert;
 mod input;
 mod misc_unknown;
 mod openxr_data;
@@ -14,71 +13,9 @@ mod system;
 mod vulkan;
 
 use clientcore::ClientCore;
+use openvr as vr;
 use std::ffi::{c_char, c_void, CStr};
-use std::sync::{Arc, Weak};
-
-include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
-
-use bindings::vr;
-
-impl Default for vr::ETrackingResult {
-    fn default() -> Self {
-        Self::Uninitialized
-    }
-}
-
-impl vr::VRTextureBounds_t {
-    #[inline]
-    fn valid(&self) -> bool {
-        [self.uMin, self.uMax, self.vMin, self.vMax]
-            .into_iter()
-            .all(|bound| (0.0..=1.0).contains(&bound))
-            || self.uMin == self.uMax
-            || self.vMin == self.vMax
-    }
-
-    #[inline]
-    fn vertically_flipped(&self) -> bool {
-        self.vMin > self.vMax
-    }
-}
-
-/// Types that are interfaces.
-/// # Safety
-///
-/// Should only be implemented by generated code.
-unsafe trait OpenVrInterface: 'static {
-    type Vtable: Sync;
-}
-
-/// Trait for inheriting from an interface.
-/// The thread safety/usage patterns of OpenVR interfaces is not clear, so we err on the safe side and require
-/// inheritors to be Sync.
-///
-/// # Safety
-///
-/// should not be implemented by hand
-unsafe trait Inherits<T: OpenVrInterface>: Sync
-where
-    Self: Sized,
-{
-    fn new_wrapped(wrapped: &Arc<Self>) -> VtableWrapper<T, Self>;
-    fn init_fntable(init: &Arc<Self>) -> *mut c_void;
-}
-
-/// A wrapper around a vtable, to safely pass across FFI.
-#[repr(C)]
-struct VtableWrapper<T: OpenVrInterface, Wrapped> {
-    base: T,
-    wrapped: Weak<Wrapped>,
-}
-
-type InterfaceGetter<T> = Box<dyn FnOnce(&Arc<T>) -> *mut c_void>;
-trait InterfaceImpl: Sync + Send + 'static {
-    fn supported_versions() -> &'static [&'static CStr];
-    /// Gets a specific interface version
-    fn get_version(version: &CStr) -> Option<InterfaceGetter<Self>>;
-}
+use std::sync::Arc;
 
 macro_rules! warn_unimplemented {
     ($function:literal) => {

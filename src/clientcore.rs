@@ -10,8 +10,11 @@ use crate::{
     rendermodels::RenderModels,
     screenshots::Screenshots,
     system::System,
-    vr::{self, IVRClientCore003_Interface, IVRInput010_Interface},
-    Inherits, InterfaceImpl,
+};
+
+use openvr::{
+    self as vr, IVRClientCore003_Interface, IVRInput010_Interface, Inherits, InterfaceImpl,
+    VtableWrapper,
 };
 
 use log::{debug, error, info, warn};
@@ -44,8 +47,8 @@ impl InterfaceStore {
 }
 
 pub enum Vtable {
-    V2(crate::VtableWrapper<vr::IVRClientCore002, ClientCore>),
-    V3(crate::VtableWrapper<vr::IVRClientCore003, ClientCore>),
+    V2(VtableWrapper<vr::IVRClientCore002, ClientCore>),
+    V3(VtableWrapper<vr::IVRClientCore003, ClientCore>),
 }
 
 unsafe impl Sync for Vtable {}

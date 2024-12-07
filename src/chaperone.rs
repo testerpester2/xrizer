@@ -1,4 +1,5 @@
-use crate::{openxr_data::RealOpenXrData, vr};
+use crate::openxr_data::RealOpenXrData;
+use openvr as vr;
 use std::sync::Arc;
 
 #[derive(macros::InterfaceImpl)]

@@ -1,4 +1,4 @@
-use crate::vr;
+use openvr as vr;
 use std::ffi::c_char;
 
 #[derive(Default, macros::InterfaceImpl)]

@@ -3,11 +3,11 @@ use crate::{
     input::Input,
     openxr_data::{self, OpenXrData, SessionData},
     overlay::OverlayMan,
-    vr,
     vulkan::VulkanData,
 };
 use ash::vk::{self, Handle};
 use log::{debug, info, trace};
+use openvr as vr;
 use openxr as xr;
 use std::sync::{Arc, Mutex};
 
@@ -232,7 +232,7 @@ impl vr::IVRCompositor028_Interface for Compositor {
 
     fn GetVulkanDeviceExtensionsRequired(
         &self,
-        _physical_device: *mut crate::bindings::VkPhysicalDevice_T,
+        _physical_device: *mut vr::VkPhysicalDevice_T,
         buffer: *mut std::ffi::c_char,
         buffer_size: u32,
     ) -> u32 {
@@ -860,7 +860,7 @@ mod tests {
 
     #[test]
     fn bad_bounds() {
-        let Fixture { comp, .. } = Fixture::new();
+        let f = Fixture::new();
 
         let bad_bounds = [
             // bound greater than 1 (Superhot does this)
@@ -895,11 +895,11 @@ mod tests {
 
         for bound in bad_bounds {
             assert_eq!(
-                comp.Submit(
+                f.comp.Submit(
                     vr::EVREye::Left,
-                    std::ptr::null(),
+                    &FakeGraphicsData::texture(&f.vk),
                     &bound,
-                    vr::EVRSubmitFlags::Default
+                    vr::EVRSubmitFlags::Default,
                 ),
                 InvalidBounds,
                 "Bound didn't return InvalidBounds: {bound:?}"

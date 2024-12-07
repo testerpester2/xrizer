@@ -8,7 +8,7 @@ resolver = "2"
 crate-type = ["cdylib"]
 
 [workspace]
-members = ["shaders", "xbuild"]
+members = ["openvr", "shaders", "xbuild"]
 
 [workspace.dependencies]
 ash = "0.38.0"
@@ -16,13 +16,15 @@ openxr = { git = "https://github.com/ralith/openxrs", rev = "d0afdd3", version =
 openxr-sys = { git = "https://github.com/ralith/openxrs", rev = "d0afdd3", version = "0.11.0" }
 slotmap = "1.0.7"
 glam = "0.29.0"
+log = "0.4.22"
 
 [dependencies]
 ash = { workspace = true }
 env_logger = "0.11.5"
 glam = { workspace = true }
-log = "0.4.22"
+log = { workspace = true }
 openxr = { workspace = true }
+openvr = { path = "openvr" }
 paste = "1.0.15"
 seq-macro = "0.3.5"
 macros = { path = "macros" }
@@ -32,13 +34,6 @@ slotmap = { workspace = true }
 time = { version = "0.3.36", features = ["formatting", "local-offset", "macros"] }
 
 [build-dependencies]
-bindgen = "0.69.4"
-cmake = "0.1.51"
-prettyplease = "0.2.20"
-proc-macro2 = "1.0.86"
-quote = "1.0.36"
-regex = "1.10.5"
-syn = { version = "2.0.71", features = ["full"] }
 shaders = { path = "shaders" }
 
 [dev-dependencies]

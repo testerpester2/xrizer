@@ -58,7 +58,7 @@ pub fn derive_interface_impl(tokens: TokenStream) -> TokenStream {
         .collect();
 
     let wrapped_variants = interface_versions_and_variants.iter().map(|(interface, variant)| {
-        quote! { #variant(crate::VtableWrapper<vr::#interface, super::#name<#generics_idents>>) }
+        quote! { #variant(openvr::VtableWrapper<vr::#interface, super::#name<#generics_idents>>) }
     });
     let interface_versions = interface_versions_and_variants
         .iter()
@@ -72,7 +72,7 @@ pub fn derive_interface_impl(tokens: TokenStream) -> TokenStream {
                 Some(Box::new(|this: &std::sync::Arc<Self>| {
                     let vtable = this.vtables.0[#index]
                         .get_or_init(|| {
-                            WrappedVtable::#variant(<Self as crate::Inherits<vr::#interface>>::new_wrapped(this))
+                            WrappedVtable::#variant(<Self as openvr::Inherits<vr::#interface>>::new_wrapped(this))
                         });
 
                     let WrappedVtable::#variant(vtable) = vtable else {
@@ -86,7 +86,7 @@ pub fn derive_interface_impl(tokens: TokenStream) -> TokenStream {
                 .strip_prefix("FnTable:")
                 .is_some_and(|x| x == vr::#interface::VERSION.to_string_lossy()) =>
             {
-                Some(Box::new(<Self as crate::Inherits<vr::#interface>>::init_fntable))
+                Some(Box::new(<Self as openvr::Inherits<vr::#interface>>::init_fntable))
             }
         }
     });
@@ -101,7 +101,7 @@ pub fn derive_interface_impl(tokens: TokenStream) -> TokenStream {
     quote! {
         use #mod_name::Vtables;
         mod #mod_name {
-            use crate::vr;
+            use openvr as vr;
             use std::sync::OnceLock;
             use super::*;
             use std::ffi::CStr;
@@ -127,7 +127,7 @@ pub fn derive_interface_impl(tokens: TokenStream) -> TokenStream {
                 }
             }
 
-            impl #generics_with_bounds crate::InterfaceImpl for super::#name<#generics_idents>{
+            impl #generics_with_bounds vr::InterfaceImpl for super::#name<#generics_idents>{
                 fn supported_versions() -> &'static [&'static CStr] {
                     &[
                         #(#interface_versions),*

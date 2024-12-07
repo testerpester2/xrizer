@@ -2,10 +2,10 @@ use crate::{
     clientcore::{Injected, Injector},
     input::Input,
     openxr_data::{Hand, RealOpenXrData},
-    vr,
 };
 use glam::{Mat3, Quat, Vec3};
 use log::{debug, warn};
+use openvr as vr;
 use openxr as xr;
 use std::ffi::CStr;
 use std::sync::{
@@ -641,7 +641,7 @@ impl vr::IVRSystem022_Interface for System {
         &self,
         device: *mut u64,
         texture_type: vr::ETextureType,
-        instance: *mut crate::bindings::VkInstance_T,
+        instance: *mut vr::VkInstance_T,
     ) {
         if texture_type != vr::ETextureType::Vulkan {
             // Proton doesn't seem to properly translate this function, but it doesn't appear to

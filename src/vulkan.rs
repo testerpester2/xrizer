@@ -1,4 +1,4 @@
-use crate::vr;
+use openvr as vr;
 use ash::vk::{self, Handle};
 use log::warn;
 use openxr as xr;

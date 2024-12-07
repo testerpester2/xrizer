@@ -329,7 +329,7 @@ impl ToggleData {
 mod tests {
     use super::*;
     use crate::input::{tests::Fixture, ActionData};
-    use crate::vr;
+    use openvr as vr;
     use fakexr::UserPath::*;
 
     macro_rules! get_toggle_action {

@@ -387,6 +387,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1261fe7e33c73b354eab43b1273a57c8f967d0391e80353e51f764ac02cf6775"
 
 [[package]]
+name = "openvr"
+version = "0.1.0"
+dependencies = [
+ "bindgen",
+ "glam",
+ "log",
+ "openxr",
+ "prettyplease",
+ "proc-macro2",
+ "quote",
+ "regex",
+ "syn",
+]
+
+[[package]]
 name = "openxr"
 version = "0.19.0"
 source = "git+https://github.com/ralith/openxrs?rev=d0afdd3#d0afdd3365bc1e14de28f6a3a21f457e788a702e"
@@ -766,26 +781,20 @@ name = "xrizer"
 version = "0.1.0"
 dependencies = [
  "ash",
- "bindgen",
- "cmake",
  "env_logger",
  "fakexr",
  "glam",
  "libloading",
  "log",
  "macros",
+ "openvr",
  "openxr",
  "paste",
- "prettyplease",
- "proc-macro2",
- "quote",
- "regex",
  "seq-macro",
  "serde",
  "serde_json",
  "shaders",
  "slotmap",
- "syn",
  "test-cdylib",
  "time",
 ]

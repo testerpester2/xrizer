@@ -1,4 +1,4 @@
-use crate::vr;
+use openvr as vr;
 
 #[derive(Default, macros::InterfaceImpl)]
 #[interface = "IVRScreenshots"]

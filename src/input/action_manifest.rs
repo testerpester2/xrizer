@@ -9,8 +9,8 @@ use super::{
 };
 use crate::{
     openxr_data::{self, Hand, SessionData},
-    vr,
 };
+use openvr as vr;
 use log::{debug, error, info, trace, warn};
 use openxr as xr;
 use serde::{

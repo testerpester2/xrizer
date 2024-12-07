@@ -10,10 +10,9 @@ mod tests;
 mod vive_controller;
 
 use crate::{
-    convert::space_relation_to_openvr_pose,
     openxr_data::{self, Hand, OpenXrData, SessionData},
-    vr,
 };
+use openvr::{self as vr, space_relation_to_openvr_pose};
 use action_manifest::InteractionProfile;
 use custom_bindings::{BoolActionData, FloatActionData};
 use log::{debug, info, trace, warn};

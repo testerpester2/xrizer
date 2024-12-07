@@ -33,7 +33,7 @@ impl std::fmt::Debug for ActionData {
 }
 
 pub(super) struct FakeCompositor(crate::vulkan::VulkanData);
-impl crate::InterfaceImpl for FakeCompositor {
+impl openvr::InterfaceImpl for FakeCompositor {
     fn get_version(_: &CStr) -> Option<Box<dyn FnOnce(&Arc<Self>) -> *mut std::ffi::c_void>> {
         None
     }

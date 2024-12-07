@@ -1,5 +1,5 @@
 use super::HandSkeletonBone;
-use crate::vr;
+use openvr as vr;
 
 // The bone data in this file is given in parent space. Using parent space
 // allows for lerping between poses to always work correctly, and the bones can be

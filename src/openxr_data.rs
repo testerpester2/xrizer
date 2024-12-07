@@ -1,10 +1,10 @@
 use crate::{
     clientcore::{Injected, Injector},
-    vr,
     vulkan::VulkanData,
 };
 use glam::f32::{Quat, Vec3};
 use log::info;
+use openvr as vr;
 use openxr as xr;
 use std::mem::ManuallyDrop;
 use std::sync::{
@@ -12,7 +12,7 @@ use std::sync::{
     RwLock,
 };
 
-pub trait Compositor: crate::InterfaceImpl {
+pub trait Compositor: vr::InterfaceImpl {
     fn init_frame_controller(
         &self,
         session: &SessionData,

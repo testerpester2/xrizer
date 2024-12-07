@@ -1,9 +1,9 @@
 use crate::{
     compositor::Compositor,
     openxr_data::{OpenXrData, SessionData},
-    vr,
     vulkan::VulkanData,
 };
+use openvr as vr;
 use ash::vk::{self, Handle};
 use log::{debug, trace};
 use openxr as xr;

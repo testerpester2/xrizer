@@ -1,8 +1,8 @@
 // The interfaces in this file are missing in openvr.h and any other form of OpenVR documentation,
 // but are used by games (typically Half Life Alyx.)
 
-use crate::InterfaceImpl;
 use log::debug;
+use openvr::InterfaceImpl;
 use seq_macro::seq;
 use std::ffi::{c_char, c_int, c_void, CStr};
 use std::sync::{
