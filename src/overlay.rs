@@ -1,94 +1,399 @@
-use crate::vr;
+use crate::{
+    compositor::Compositor,
+    openxr_data::{OpenXrData, SessionData},
+    vr,
+    vulkan::VulkanData,
+};
+use ash::vk::{self, Handle};
+use log::{debug, trace};
+use openxr as xr;
+use slotmap::{new_key_type, Key, KeyData, SecondaryMap, SlotMap};
+use std::collections::HashMap;
+use std::ffi::{c_char, c_void, CStr, CString};
+use std::sync::{Arc, Mutex, RwLock};
 
-#[derive(Default, macros::InterfaceImpl)]
+#[derive(macros::InterfaceImpl)]
 #[interface = "IVROverlay"]
 #[versions(027, 024, 021, 020, 019, 018, 016)]
 pub struct OverlayMan {
     vtables: Vtables,
+    openxr: Arc<OpenXrData<Compositor>>,
+    overlays: RwLock<SlotMap<OverlayKey, Overlay>>,
+    key_to_overlay: RwLock<HashMap<CString, OverlayKey>>,
 }
 
-#[allow(unused_variables, non_snake_case)]
+impl OverlayMan {
+    pub fn new(openxr: Arc<OpenXrData<Compositor>>) -> Self {
+        Self {
+            vtables: Vtables::default(),
+            openxr,
+            overlays: Default::default(),
+            key_to_overlay: Default::default(),
+        }
+    }
+
+    pub fn get_layers<'a>(
+        &self,
+        session: &'a SessionData,
+    ) -> Vec<xr::CompositionLayerQuad<'a, xr::Vulkan>> {
+        let mut overlays = self.overlays.write().unwrap();
+        let swapchains = session.overlay_data.swapchains.lock().unwrap();
+
+        let mut layers = Vec::with_capacity(overlays.len());
+        for (key, overlay) in overlays.iter_mut() {
+            if !overlay.visible {
+                continue;
+            }
+            let Some(data) = overlay.last_frame.take() else {
+                continue;
+            };
+
+            let swapchain = swapchains.get(key).unwrap();
+            let space = session.get_space_for_origin(
+                overlay
+                    .transform
+                    .as_ref()
+                    .map(|(o, _)| *o)
+                    .unwrap_or(session.current_origin),
+            );
+
+            let layer = xr::CompositionLayerQuad::new()
+                .space(space)
+                .layer_flags(xr::CompositionLayerFlags::BLEND_TEXTURE_SOURCE_ALPHA)
+                .eye_visibility(xr::EyeVisibility::BOTH)
+                .sub_image(
+                    xr::SwapchainSubImage::new()
+                        .image_array_index(vr::EVREye::Left as u32)
+                        .swapchain(&swapchain)
+                        .image_rect(data.rect),
+                )
+                .pose(
+                    overlay
+                        .transform
+                        .as_ref()
+                        .map(|(_, t)| (*t).into())
+                        .unwrap_or(xr::Posef {
+                            position: xr::Vector3f {
+                                x: 0.0,
+                                y: 0.0,
+                                z: -0.5,
+                            },
+                            orientation: xr::Quaternionf::IDENTITY,
+                        }),
+                )
+                .size(xr::Extent2Df {
+                    width: overlay.width,
+                    height: data.rect.extent.height as f32 * overlay.width
+                        / data.rect.extent.width as f32,
+                });
+
+            // SAFETY: We need to remove the lifetimes to be able to return this layer.
+            // Internally, CompositionLayerQuad is using the raw OpenXR handles and PhantomData, not actual
+            // references, so returning it as long as we can guarantee the lifetimes of the space and
+            // swapchain is fine. Both of these are derived from the SessionData,
+            // so we should have no lifetime problems.
+            let layer = unsafe { xr::CompositionLayerQuad::from_raw(layer.into_raw()) };
+            layers.push(layer);
+        }
+
+        trace!("returning {} layers", layers.len());
+        layers
+    }
+}
+
+new_key_type!(
+    struct OverlayKey;
+);
+
+#[derive(Default)]
+pub struct OverlaySessionData {
+    swapchains: Mutex<SecondaryMap<OverlayKey, xr::Swapchain<xr::Vulkan>>>,
+}
+
+struct Overlay {
+    key: CString,
+    name: CString,
+    alpha: f32,
+    width: f32,
+    visible: bool,
+    bounds: vr::VRTextureBounds_t,
+    transform: Option<(vr::ETrackingUniverseOrigin, vr::HmdMatrix34_t)>,
+    compositor: Option<VulkanData>,
+    last_frame: Option<FrameData>,
+}
+
+struct FrameData {
+    rect: xr::Rect2Di,
+}
+
+impl Overlay {
+    fn new(key: CString, name: CString) -> Self {
+        Self {
+            key,
+            name,
+            alpha: 1.0,
+            width: 1.0,
+            visible: false,
+            bounds: vr::VRTextureBounds_t {
+                uMin: 0.0,
+                vMin: 0.0,
+                uMax: 1.0,
+                vMax: 1.0,
+            },
+            transform: None,
+            compositor: None,
+            last_frame: None,
+        }
+    }
+
+    pub fn set_texture(
+        &mut self,
+        key: OverlayKey,
+        session_data: &SessionData,
+        texture: vr::Texture_t,
+    ) {
+        assert_eq!(
+            texture.eType,
+            vr::ETextureType::Vulkan,
+            "non vulkan textures unsupported"
+        );
+        let texture_data = unsafe { texture.handle.cast::<vr::VRVulkanTextureData_t>().read() };
+        let data = self
+            .compositor
+            .get_or_insert_with(|| VulkanData::new(&texture_data));
+
+        let mut swapchains = session_data.overlay_data.swapchains.lock().unwrap();
+        let swapchain = swapchains.entry(key).unwrap().or_insert_with(|| {
+            let swapchain = session_data
+                .session
+                .create_swapchain(&VulkanData::get_swapchain_create_info(
+                    &texture_data,
+                    self.bounds,
+                    texture.eColorSpace,
+                ))
+                .unwrap();
+
+            let imgs = swapchain
+                .enumerate_images()
+                .unwrap()
+                .into_iter()
+                .map(vk::Image::from_raw)
+                .collect();
+            data.post_swapchain_create(imgs);
+            swapchain
+        });
+
+        let idx = swapchain.acquire_image().unwrap();
+        swapchain.wait_image(xr::Duration::INFINITE).unwrap();
+
+        let extent =
+            data.copy_overlay_to_swapchain(&texture_data, self.bounds, idx as usize, self.alpha);
+        swapchain.release_image().unwrap();
+
+        self.last_frame = Some(FrameData {
+            rect: xr::Rect2Di {
+                extent,
+                offset: xr::Offset2Di::default(),
+            },
+        });
+    }
+}
+
+macro_rules! get_overlay {
+    (@impl $self:ident, $handle:expr, $overlay:ident, $lock:ident, $get:ident $(,$mut:ident)?) => {
+        let $($mut)? overlays = $self.overlays.$lock().unwrap();
+        let Some($overlay) = overlays.$get(OverlayKey::from(KeyData::from_ffi($handle))) else {
+            return vr::EVROverlayError::UnknownOverlay;
+        };
+    };
+    ($self:ident, $handle:expr, $overlay:ident) => {
+        get_overlay!(@impl $self, $handle, $overlay, read, get);
+    };
+    ($self:ident, $handle:expr, mut $overlay:ident) => {
+        get_overlay!(@impl $self, $handle, $overlay, write, get_mut, mut);
+    };
+}
+
 impl vr::IVROverlay027_Interface for OverlayMan {
+    fn CreateOverlay(
+        &self,
+        key: *const c_char,
+        name: *const c_char,
+        handle: *mut vr::VROverlayHandle_t,
+    ) -> vr::EVROverlayError {
+        let key = unsafe { CStr::from_ptr(key) };
+        let name = unsafe { CStr::from_ptr(name) };
+
+        if handle.is_null() {
+            return vr::EVROverlayError::InvalidParameter;
+        }
+
+        let mut overlays = self.overlays.write().unwrap();
+        let ret_key = overlays.insert(Overlay::new(key.into(), name.into()));
+        let mut key_to_overlay = self.key_to_overlay.write().unwrap();
+        key_to_overlay.insert(key.into(), ret_key);
+
+        unsafe {
+            handle.write(ret_key.data().as_ffi());
+        }
+
+        debug!("created overlay {name:?} with key {key:?}");
+        vr::EVROverlayError::None
+    }
+
+    fn FindOverlay(
+        &self,
+        key: *const c_char,
+        handle: *mut vr::VROverlayHandle_t,
+    ) -> vr::EVROverlayError {
+        if handle.is_null() {
+            return vr::EVROverlayError::InvalidParameter;
+        }
+        let key = unsafe { CStr::from_ptr(key) };
+        let map = self.key_to_overlay.read().unwrap();
+        if let Some(key) = map.get(key) {
+            unsafe {
+                handle.write(key.data().as_ffi());
+            }
+            vr::EVROverlayError::None
+        } else {
+            return vr::EVROverlayError::UnknownOverlay;
+        }
+    }
+
+    fn ShowOverlay(&self, handle: vr::VROverlayHandle_t) -> vr::EVROverlayError {
+        get_overlay!(self, handle, mut overlay);
+
+        debug!("showing overlay {:?}", overlay.name);
+        overlay.visible = true;
+        vr::EVROverlayError::None
+    }
+
+    fn HideOverlay(&self, handle: vr::VROverlayHandle_t) -> vr::EVROverlayError {
+        get_overlay!(self, handle, mut overlay);
+
+        debug!("hiding overlay {:?}", overlay.name);
+        overlay.visible = false;
+        vr::EVROverlayError::None
+    }
+
+    fn SetOverlayAlpha(&self, handle: vr::VROverlayHandle_t, alpha: f32) -> vr::EVROverlayError {
+        get_overlay!(self, handle, mut overlay);
+
+        debug!("setting overlay {:?} alpha to {alpha}", overlay.name);
+        overlay.alpha = alpha;
+        vr::EVROverlayError::None
+    }
+
+    fn SetOverlayWidthInMeters(
+        &self,
+        handle: vr::VROverlayHandle_t,
+        width: f32,
+    ) -> vr::EVROverlayError {
+        get_overlay!(self, handle, mut overlay);
+
+        debug!("setting overlay {:?} width to {width}", overlay.name);
+        overlay.width = width;
+        vr::EVROverlayError::None
+    }
+
+    fn SetOverlayTexture(
+        &self,
+        handle: vr::VROverlayHandle_t,
+        texture: *const vr::Texture_t,
+    ) -> vr::EVROverlayError {
+        get_overlay!(self, handle, mut overlay);
+        if texture.is_null() {
+            vr::EVROverlayError::InvalidParameter
+        } else {
+            let texture = unsafe { texture.read() };
+            let key = OverlayKey::from(KeyData::from_ffi(handle));
+            overlay.set_texture(key, &self.openxr.session_data.get(), texture);
+            debug!("set overlay texture for {:?}", overlay.name);
+            vr::EVROverlayError::None
+        }
+    }
+
     fn CloseMessageOverlay(&self) {
         todo!()
     }
     fn ShowMessageOverlay(
         &self,
-        pchText: *const std::os::raw::c_char,
-        pchCaption: *const std::os::raw::c_char,
-        pchButton0Text: *const std::os::raw::c_char,
-        pchButton1Text: *const std::os::raw::c_char,
-        pchButton2Text: *const std::os::raw::c_char,
-        pchButton3Text: *const std::os::raw::c_char,
+        _: *const c_char,
+        _: *const c_char,
+        _: *const c_char,
+        _: *const c_char,
+        _: *const c_char,
+        _: *const c_char,
     ) -> vr::VRMessageOverlayResponse {
         todo!()
     }
     fn SetKeyboardPositionForOverlay(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        avoidRect: vr::HmdRect2_t,
+        _: vr::VROverlayHandle_t,
+        _: vr::HmdRect2_t,
     ) {
         todo!()
     }
     fn SetKeyboardTransformAbsolute(
         &self,
-        eTrackingOrigin: vr::ETrackingUniverseOrigin,
-        pmatTrackingOriginToKeyboardTransform: *const vr::HmdMatrix34_t,
+        _: vr::ETrackingUniverseOrigin,
+        _: *const vr::HmdMatrix34_t,
     ) {
         todo!()
     }
     fn HideKeyboard(&self) {
         todo!()
     }
-    fn GetKeyboardText(&self, pchText: *mut std::os::raw::c_char, cchText: u32) -> u32 {
+    fn GetKeyboardText(&self, _: *mut c_char, _: u32) -> u32 {
         todo!()
     }
     fn ShowKeyboardForOverlay(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        eInputMode: vr::EGamepadTextInputMode,
-        eLineInputMode: vr::EGamepadTextInputLineMode,
-        unFlags: u32,
-        pchDescription: *const std::os::raw::c_char,
-        unCharMax: u32,
-        pchExistingText: *const std::os::raw::c_char,
-        uUserValue: u64,
+        _: vr::VROverlayHandle_t,
+        _: vr::EGamepadTextInputMode,
+        _: vr::EGamepadTextInputLineMode,
+        _: u32,
+        _: *const c_char,
+        _: u32,
+        _: *const c_char,
+        _: u64,
     ) -> vr::EVROverlayError {
         todo!()
     }
     fn ShowKeyboard(
         &self,
-        eInputMode: vr::EGamepadTextInputMode,
-        eLineInputMode: vr::EGamepadTextInputLineMode,
-        unFlags: u32,
-        pchDescription: *const std::os::raw::c_char,
-        unCharMax: u32,
-        pchExistingText: *const std::os::raw::c_char,
-        uUserValue: u64,
+        _: vr::EGamepadTextInputMode,
+        _: vr::EGamepadTextInputLineMode,
+        _: u32,
+        _: *const c_char,
+        _: u32,
+        _: *const c_char,
+        _: u64,
     ) -> vr::EVROverlayError {
         todo!()
     }
     fn GetPrimaryDashboardDevice(&self) -> vr::TrackedDeviceIndex_t {
         todo!()
     }
-    fn ShowDashboard(&self, pchOverlayToShow: *const std::os::raw::c_char) {
+    fn ShowDashboard(&self, _: *const c_char) {
         todo!()
     }
     fn GetDashboardOverlaySceneProcess(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        punProcessId: *mut u32,
+        _: vr::VROverlayHandle_t,
+        _: *mut u32,
     ) -> vr::EVROverlayError {
         todo!()
     }
     fn SetDashboardOverlaySceneProcess(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        unProcessId: u32,
+        _: vr::VROverlayHandle_t,
+        _: u32,
     ) -> vr::EVROverlayError {
         todo!()
     }
-    fn IsActiveDashboardOverlay(&self, ulOverlayHandle: vr::VROverlayHandle_t) -> bool {
+    fn IsActiveDashboardOverlay(&self, _: vr::VROverlayHandle_t) -> bool {
         todo!()
     }
     fn IsDashboardVisible(&self) -> bool {
@@ -96,483 +401,457 @@ impl vr::IVROverlay027_Interface for OverlayMan {
     }
     fn CreateDashboardOverlay(
         &self,
-        pchOverlayKey: *const std::os::raw::c_char,
-        pchOverlayFriendlyName: *const std::os::raw::c_char,
-        pMainHandle: *mut vr::VROverlayHandle_t,
-        pThumbnailHandle: *mut vr::VROverlayHandle_t,
+        _: *const c_char,
+        _: *const c_char,
+        _: *mut vr::VROverlayHandle_t,
+        _: *mut vr::VROverlayHandle_t,
     ) -> vr::EVROverlayError {
         todo!()
     }
     fn GetOverlayTextureSize(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        pWidth: *mut u32,
-        pHeight: *mut u32,
+        _: vr::VROverlayHandle_t,
+        _: *mut u32,
+        _: *mut u32,
     ) -> vr::EVROverlayError {
         todo!()
     }
     fn ReleaseNativeOverlayHandle(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        pNativeTextureHandle: *mut std::os::raw::c_void,
+        _: vr::VROverlayHandle_t,
+        _: *mut c_void,
     ) -> vr::EVROverlayError {
         todo!()
     }
     fn GetOverlayTexture(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        pNativeTextureHandle: *mut *mut std::os::raw::c_void,
-        pNativeTextureRef: *mut std::os::raw::c_void,
-        pWidth: *mut u32,
-        pHeight: *mut u32,
-        pNativeFormat: *mut u32,
-        pAPIType: *mut vr::ETextureType,
-        pColorSpace: *mut vr::EColorSpace,
-        pTextureBounds: *mut vr::VRTextureBounds_t,
+        _: vr::VROverlayHandle_t,
+        _: *mut *mut c_void,
+        _: *mut c_void,
+        _: *mut u32,
+        _: *mut u32,
+        _: *mut u32,
+        _: *mut vr::ETextureType,
+        _: *mut vr::EColorSpace,
+        _: *mut vr::VRTextureBounds_t,
     ) -> vr::EVROverlayError {
         todo!()
     }
     fn SetOverlayFromFile(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        pchFilePath: *const std::os::raw::c_char,
+        _: vr::VROverlayHandle_t,
+        _: *const c_char,
     ) -> vr::EVROverlayError {
         todo!()
     }
     fn SetOverlayRaw(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        pvBuffer: *mut std::os::raw::c_void,
-        unWidth: u32,
-        unHeight: u32,
-        unBytesPerPixel: u32,
+        _: vr::VROverlayHandle_t,
+        _: *mut c_void,
+        _: u32,
+        _: u32,
+        _: u32,
     ) -> vr::EVROverlayError {
         todo!()
     }
-    fn ClearOverlayTexture(&self, ulOverlayHandle: vr::VROverlayHandle_t) -> vr::EVROverlayError {
-        todo!()
-    }
-    fn SetOverlayTexture(
-        &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        pTexture: *const vr::Texture_t,
-    ) -> vr::EVROverlayError {
+    fn ClearOverlayTexture(&self, _: vr::VROverlayHandle_t) -> vr::EVROverlayError {
         todo!()
     }
     fn ClearOverlayCursorPositionOverride(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
+        _: vr::VROverlayHandle_t,
     ) -> vr::EVROverlayError {
         todo!()
     }
     fn SetOverlayCursorPositionOverride(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        pvCursor: *const vr::HmdVector2_t,
+        _: vr::VROverlayHandle_t,
+        _: *const vr::HmdVector2_t,
     ) -> vr::EVROverlayError {
         todo!()
     }
     fn SetOverlayCursor(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        ulCursorHandle: vr::VROverlayHandle_t,
+        _: vr::VROverlayHandle_t,
+        _: vr::VROverlayHandle_t,
     ) -> vr::EVROverlayError {
         todo!()
     }
     fn TriggerLaserMouseHapticVibration(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        fDurationSeconds: f32,
-        fFrequency: f32,
-        fAmplitude: f32,
+        _: vr::VROverlayHandle_t,
+        _: f32,
+        _: f32,
+        _: f32,
     ) -> vr::EVROverlayError {
         todo!()
     }
     fn SetOverlayIntersectionMask(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        pMaskPrimitives: *mut vr::VROverlayIntersectionMaskPrimitive_t,
-        unNumMaskPrimitives: u32,
-        unPrimitiveSize: u32,
+        _: vr::VROverlayHandle_t,
+        _: *mut vr::VROverlayIntersectionMaskPrimitive_t,
+        _: u32,
+        _: u32,
     ) -> vr::EVROverlayError {
         todo!()
     }
-    fn IsHoverTargetOverlay(&self, ulOverlayHandle: vr::VROverlayHandle_t) -> bool {
+    fn IsHoverTargetOverlay(&self, _: vr::VROverlayHandle_t) -> bool {
         todo!()
     }
     fn ComputeOverlayIntersection(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        pParams: *const vr::VROverlayIntersectionParams_t,
-        pResults: *mut vr::VROverlayIntersectionResults_t,
+        _: vr::VROverlayHandle_t,
+        _: *const vr::VROverlayIntersectionParams_t,
+        _: *mut vr::VROverlayIntersectionResults_t,
     ) -> bool {
         todo!()
     }
     fn SetOverlayMouseScale(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        pvecMouseScale: *const vr::HmdVector2_t,
+        _: vr::VROverlayHandle_t,
+        _: *const vr::HmdVector2_t,
     ) -> vr::EVROverlayError {
         todo!()
     }
     fn GetOverlayMouseScale(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        pvecMouseScale: *mut vr::HmdVector2_t,
+        _: vr::VROverlayHandle_t,
+        _: *mut vr::HmdVector2_t,
     ) -> vr::EVROverlayError {
         todo!()
     }
     fn SetOverlayInputMethod(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        eInputMethod: vr::VROverlayInputMethod,
+        _: vr::VROverlayHandle_t,
+        _: vr::VROverlayInputMethod,
     ) -> vr::EVROverlayError {
         todo!()
     }
     fn GetOverlayInputMethod(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        peInputMethod: *mut vr::VROverlayInputMethod,
+        _: vr::VROverlayHandle_t,
+        _: *mut vr::VROverlayInputMethod,
     ) -> vr::EVROverlayError {
         todo!()
     }
     fn PollNextOverlayEvent(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        pEvent: *mut vr::VREvent_t,
-        uncbVREvent: u32,
+        _: vr::VROverlayHandle_t,
+        _: *mut vr::VREvent_t,
+        _: u32,
     ) -> bool {
         todo!()
     }
-    fn WaitFrameSync(&self, nTimeoutMs: u32) -> vr::EVROverlayError {
+    fn WaitFrameSync(&self, _: u32) -> vr::EVROverlayError {
         todo!()
     }
     fn GetTransformForOverlayCoordinates(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        eTrackingOrigin: vr::ETrackingUniverseOrigin,
-        coordinatesInOverlay: vr::HmdVector2_t,
-        pmatTransform: *mut vr::HmdMatrix34_t,
+        _: vr::VROverlayHandle_t,
+        _: vr::ETrackingUniverseOrigin,
+        _: vr::HmdVector2_t,
+        _: *mut vr::HmdMatrix34_t,
     ) -> vr::EVROverlayError {
         todo!()
     }
-    fn IsOverlayVisible(&self, ulOverlayHandle: vr::VROverlayHandle_t) -> bool {
+    fn IsOverlayVisible(&self, _: vr::VROverlayHandle_t) -> bool {
         todo!()
-    }
-    fn HideOverlay(&self, ulOverlayHandle: vr::VROverlayHandle_t) -> vr::EVROverlayError {
-        crate::warn_unimplemented!("HideOverlay");
-        vr::EVROverlayError::None
-    }
-    fn ShowOverlay(&self, ulOverlayHandle: vr::VROverlayHandle_t) -> vr::EVROverlayError {
-        crate::warn_unimplemented!("ShowOverlay");
-        vr::EVROverlayError::None
     }
     fn SetOverlayTransformProjection(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        eTrackingOrigin: vr::ETrackingUniverseOrigin,
-        pmatTrackingOriginToOverlayTransform: *const vr::HmdMatrix34_t,
-        pProjection: *const vr::VROverlayProjection_t,
-        eEye: vr::EVREye,
+        _: vr::VROverlayHandle_t,
+        _: vr::ETrackingUniverseOrigin,
+        _: *const vr::HmdMatrix34_t,
+        _: *const vr::VROverlayProjection_t,
+        _: vr::EVREye,
     ) -> vr::EVROverlayError {
         todo!()
     }
     fn GetOverlayTransformCursor(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        pvHotspot: *mut vr::HmdVector2_t,
+        _: vr::VROverlayHandle_t,
+        _: *mut vr::HmdVector2_t,
     ) -> vr::EVROverlayError {
         todo!()
     }
     fn SetOverlayTransformCursor(
         &self,
-        ulCursorOverlayHandle: vr::VROverlayHandle_t,
-        pvHotspot: *const vr::HmdVector2_t,
+        _: vr::VROverlayHandle_t,
+        _: *const vr::HmdVector2_t,
     ) -> vr::EVROverlayError {
         todo!()
     }
     fn GetOverlayTransformTrackedDeviceComponent(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        punDeviceIndex: *mut vr::TrackedDeviceIndex_t,
-        pchComponentName: *mut std::os::raw::c_char,
-        unComponentNameSize: u32,
+        _: vr::VROverlayHandle_t,
+        _: *mut vr::TrackedDeviceIndex_t,
+        _: *mut c_char,
+        _: u32,
     ) -> vr::EVROverlayError {
         todo!()
     }
     fn SetOverlayTransformTrackedDeviceComponent(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        unDeviceIndex: vr::TrackedDeviceIndex_t,
-        pchComponentName: *const std::os::raw::c_char,
+        _: vr::VROverlayHandle_t,
+        _: vr::TrackedDeviceIndex_t,
+        _: *const c_char,
     ) -> vr::EVROverlayError {
         todo!()
     }
     fn GetOverlayTransformTrackedDeviceRelative(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        punTrackedDevice: *mut vr::TrackedDeviceIndex_t,
-        pmatTrackedDeviceToOverlayTransform: *mut vr::HmdMatrix34_t,
+        _: vr::VROverlayHandle_t,
+        _: *mut vr::TrackedDeviceIndex_t,
+        _: *mut vr::HmdMatrix34_t,
     ) -> vr::EVROverlayError {
         todo!()
     }
     fn SetOverlayTransformTrackedDeviceRelative(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        unTrackedDevice: vr::TrackedDeviceIndex_t,
-        pmatTrackedDeviceToOverlayTransform: *const vr::HmdMatrix34_t,
+        _: vr::VROverlayHandle_t,
+        _: vr::TrackedDeviceIndex_t,
+        _: *const vr::HmdMatrix34_t,
     ) -> vr::EVROverlayError {
-        todo!()
+        crate::warn_unimplemented!("SetOverlayTransformTrackedDeviceRelative");
+        vr::EVROverlayError::None
     }
     fn GetOverlayTransformAbsolute(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        peTrackingOrigin: *mut vr::ETrackingUniverseOrigin,
-        pmatTrackingOriginToOverlayTransform: *mut vr::HmdMatrix34_t,
+        _: vr::VROverlayHandle_t,
+        _: *mut vr::ETrackingUniverseOrigin,
+        _: *mut vr::HmdMatrix34_t,
     ) -> vr::EVROverlayError {
         todo!()
     }
     fn SetOverlayTransformAbsolute(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        eTrackingOrigin: vr::ETrackingUniverseOrigin,
-        pmatTrackingOriginToOverlayTransform: *const vr::HmdMatrix34_t,
+        handle: vr::VROverlayHandle_t,
+        origin: vr::ETrackingUniverseOrigin,
+        transform: *const vr::HmdMatrix34_t,
     ) -> vr::EVROverlayError {
-        crate::warn_unimplemented!("SetOverlayTransformAbsolute");
-        vr::EVROverlayError::None
+        get_overlay!(self, handle, mut overlay);
+        if transform.is_null() {
+            vr::EVROverlayError::InvalidParameter
+        } else {
+            overlay.transform = Some((origin, unsafe { transform.read() }));
+            debug!(
+                "set overlay transform origin to {origin:?} for {:?}",
+                overlay.name
+            );
+            vr::EVROverlayError::None
+        }
     }
     fn GetOverlayTransformType(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        peTransformType: *mut vr::VROverlayTransformType,
+        _: vr::VROverlayHandle_t,
+        _: *mut vr::VROverlayTransformType,
     ) -> vr::EVROverlayError {
         todo!()
     }
     fn GetOverlayTextureBounds(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        pOverlayTextureBounds: *mut vr::VRTextureBounds_t,
+        _: vr::VROverlayHandle_t,
+        _: *mut vr::VRTextureBounds_t,
     ) -> vr::EVROverlayError {
         todo!()
     }
     fn SetOverlayTextureBounds(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        pOverlayTextureBounds: *const vr::VRTextureBounds_t,
+        handle: vr::VROverlayHandle_t,
+        bounds: *const vr::VRTextureBounds_t,
     ) -> vr::EVROverlayError {
-        crate::warn_unimplemented!("SetOverlayTextureBounds");
-        vr::EVROverlayError::None
+        get_overlay!(self, handle, mut overlay);
+        if bounds.is_null() {
+            vr::EVROverlayError::InvalidParameter
+        } else {
+            overlay.bounds = unsafe { bounds.read() };
+            vr::EVROverlayError::None
+        }
     }
     fn GetOverlayTextureColorSpace(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        peTextureColorSpace: *mut vr::EColorSpace,
+        _: vr::VROverlayHandle_t,
+        _: *mut vr::EColorSpace,
     ) -> vr::EVROverlayError {
         todo!()
     }
     fn SetOverlayTextureColorSpace(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        eTextureColorSpace: vr::EColorSpace,
+        _: vr::VROverlayHandle_t,
+        _: vr::EColorSpace,
     ) -> vr::EVROverlayError {
         todo!()
     }
     fn GetOverlayPreCurvePitch(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        pfRadians: *mut f32,
+        _: vr::VROverlayHandle_t,
+        _: *mut f32,
     ) -> vr::EVROverlayError {
         todo!()
     }
     fn SetOverlayPreCurvePitch(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        fRadians: f32,
+        _: vr::VROverlayHandle_t,
+        _: f32,
     ) -> vr::EVROverlayError {
         todo!()
     }
     fn GetOverlayCurvature(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        pfCurvature: *mut f32,
+        _: vr::VROverlayHandle_t,
+        _: *mut f32,
     ) -> vr::EVROverlayError {
         todo!()
     }
     fn SetOverlayCurvature(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        fCurvature: f32,
+        _: vr::VROverlayHandle_t,
+        _: f32,
     ) -> vr::EVROverlayError {
         todo!()
     }
     fn GetOverlayWidthInMeters(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        pfWidthInMeters: *mut f32,
+        _: vr::VROverlayHandle_t,
+        _: *mut f32,
     ) -> vr::EVROverlayError {
         todo!()
     }
-    fn SetOverlayWidthInMeters(
-        &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        fWidthInMeters: f32,
-    ) -> vr::EVROverlayError {
-        crate::warn_unimplemented!("SetOverlayWidthInMeters");
-        vr::EVROverlayError::None
-    }
     fn GetOverlaySortOrder(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        punSortOrder: *mut u32,
+        _: vr::VROverlayHandle_t,
+        _: *mut u32,
     ) -> vr::EVROverlayError {
         todo!()
     }
     fn SetOverlaySortOrder(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        unSortOrder: u32,
+        _: vr::VROverlayHandle_t,
+        _: u32,
     ) -> vr::EVROverlayError {
-        todo!()
+        crate::warn_unimplemented!("SetOverlaySortOrder");
+        vr::EVROverlayError::None
     }
     fn GetOverlayTexelAspect(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        pfTexelAspect: *mut f32,
+        _: vr::VROverlayHandle_t,
+        _: *mut f32,
     ) -> vr::EVROverlayError {
         todo!()
     }
     fn SetOverlayTexelAspect(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        fTexelAspect: f32,
+        _: vr::VROverlayHandle_t,
+        _: f32,
     ) -> vr::EVROverlayError {
-        todo!()
+        crate::warn_unimplemented!("SetOverlayTexelAspect");
+        vr::EVROverlayError::None
     }
     fn GetOverlayAlpha(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        pfAlpha: *mut f32,
+        _: vr::VROverlayHandle_t,
+        _: *mut f32,
     ) -> vr::EVROverlayError {
         todo!()
     }
-    fn SetOverlayAlpha(
-        &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        fAlpha: f32,
-    ) -> vr::EVROverlayError {
-        crate::warn_unimplemented!("SetOverlayAlpha");
-        vr::EVROverlayError::None
-    }
+
     fn GetOverlayColor(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        pfRed: *mut f32,
-        pfGreen: *mut f32,
-        pfBlue: *mut f32,
+        _: vr::VROverlayHandle_t,
+        _: *mut f32,
+        _: *mut f32,
+        _: *mut f32,
     ) -> vr::EVROverlayError {
         todo!()
     }
     fn SetOverlayColor(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        fRed: f32,
-        fGreen: f32,
-        fBlue: f32,
+        _: vr::VROverlayHandle_t,
+        _: f32,
+        _: f32,
+        _: f32,
     ) -> vr::EVROverlayError {
         todo!()
     }
     fn GetOverlayFlags(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        pFlags: *mut u32,
+        _: vr::VROverlayHandle_t,
+        _: *mut u32,
     ) -> vr::EVROverlayError {
         todo!()
     }
     fn GetOverlayFlag(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        eOverlayFlag: vr::VROverlayFlags,
-        pbEnabled: *mut bool,
+        _: vr::VROverlayHandle_t,
+        _: vr::VROverlayFlags,
+        _: *mut bool,
     ) -> vr::EVROverlayError {
         todo!()
     }
     fn SetOverlayFlag(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        eOverlayFlag: vr::VROverlayFlags,
-        bEnabled: bool,
+        _: vr::VROverlayHandle_t,
+        _: vr::VROverlayFlags,
+        _: bool,
     ) -> vr::EVROverlayError {
         todo!()
     }
-    fn GetOverlayRenderingPid(&self, ulOverlayHandle: vr::VROverlayHandle_t) -> u32 {
+    fn GetOverlayRenderingPid(&self, _: vr::VROverlayHandle_t) -> u32 {
         todo!()
     }
     fn SetOverlayRenderingPid(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        unPID: u32,
+        _: vr::VROverlayHandle_t,
+        _: u32,
     ) -> vr::EVROverlayError {
         todo!()
     }
-    fn GetOverlayErrorNameFromEnum(
-        &self,
-        error: vr::EVROverlayError,
-    ) -> *const std::os::raw::c_char {
+    fn GetOverlayErrorNameFromEnum(&self, _: vr::EVROverlayError) -> *const c_char {
         todo!()
     }
     fn GetOverlayImageData(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        pvBuffer: *mut std::os::raw::c_void,
-        unBufferSize: u32,
-        punWidth: *mut u32,
-        punHeight: *mut u32,
+        _: vr::VROverlayHandle_t,
+        _: *mut c_void,
+        _: u32,
+        _: *mut u32,
+        _: *mut u32,
     ) -> vr::EVROverlayError {
         todo!()
     }
     fn SetOverlayName(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        pchName: *const std::os::raw::c_char,
+        _: vr::VROverlayHandle_t,
+        _: *const c_char,
     ) -> vr::EVROverlayError {
         todo!()
     }
     fn GetOverlayName(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        pchValue: *mut std::os::raw::c_char,
-        unBufferSize: u32,
-        pError: *mut vr::EVROverlayError,
+        _: vr::VROverlayHandle_t,
+        _: *mut c_char,
+        _: u32,
+        _: *mut vr::EVROverlayError,
     ) -> u32 {
         todo!()
     }
     fn GetOverlayKey(
         &self,
-        ulOverlayHandle: vr::VROverlayHandle_t,
-        pchValue: *mut std::os::raw::c_char,
-        unBufferSize: u32,
-        pError: *mut vr::EVROverlayError,
+        _: vr::VROverlayHandle_t,
+        _: *mut c_char,
+        _: u32,
+        _: *mut vr::EVROverlayError,
     ) -> u32 {
         todo!()
     }
-    fn DestroyOverlay(&self, ulOverlayHandle: vr::VROverlayHandle_t) -> vr::EVROverlayError {
-        todo!()
-    }
-    fn CreateOverlay(
-        &self,
-        pchOverlayKey: *const std::os::raw::c_char,
-        pchOverlayName: *const std::os::raw::c_char,
-        pOverlayHandle: *mut vr::VROverlayHandle_t,
-    ) -> vr::EVROverlayError {
-        crate::warn_unimplemented!("CreateOverlay");
-        vr::EVROverlayError::None
-    }
-    fn FindOverlay(
-        &self,
-        pchOverlayKey: *const std::os::raw::c_char,
-        pOverlayHandle: *mut vr::VROverlayHandle_t,
-    ) -> vr::EVROverlayError {
-        crate::warn_unimplemented!("FindOverlay");
+    fn DestroyOverlay(&self, handle: vr::VROverlayHandle_t) -> vr::EVROverlayError {
+        let key = OverlayKey::from(KeyData::from_ffi(handle));
+
+        let mut overlays = self.overlays.write().unwrap();
+        if let Some(overlay) = overlays.remove(key) {
+            let mut map = self.key_to_overlay.write().unwrap();
+            map.remove(&overlay.key);
+        }
         vr::EVROverlayError::None
     }
 }
@@ -602,9 +881,9 @@ impl vr::IVROverlay021On024 for OverlayMan {
         _: vr::VROverlayHandle_t,
         _: vr::EGamepadTextInputMode,
         _: vr::EGamepadTextInputLineMode,
-        _: *const std::os::raw::c_char,
+        _: *const c_char,
         _: u32,
-        _: *const std::os::raw::c_char,
+        _: *const c_char,
         _: bool,
         _: u64,
     ) -> vr::EVROverlayError {
@@ -614,9 +893,9 @@ impl vr::IVROverlay021On024 for OverlayMan {
         &self,
         _: vr::EGamepadTextInputMode,
         _: vr::EGamepadTextInputLineMode,
-        _: *const std::os::raw::c_char,
+        _: *const c_char,
         _: u32,
-        _: *const std::os::raw::c_char,
+        _: *const c_char,
         _: bool,
         _: u64,
     ) -> vr::EVROverlayError {
@@ -625,7 +904,7 @@ impl vr::IVROverlay021On024 for OverlayMan {
     fn SetOverlayRaw(
         &self,
         _: vr::VROverlayHandle_t,
-        _: *mut std::os::raw::c_void,
+        _: *mut c_void,
         _: u32,
         _: u32,
         _: u32,
@@ -653,7 +932,7 @@ impl vr::IVROverlay021On024 for OverlayMan {
     fn SetOverlayRenderModel(
         &self,
         _: vr::VROverlayHandle_t,
-        _: *const std::os::raw::c_char,
+        _: *const c_char,
         _: *const vr::HmdColor_t,
     ) -> vr::EVROverlayError {
         todo!()
@@ -661,7 +940,7 @@ impl vr::IVROverlay021On024 for OverlayMan {
     fn GetOverlayRenderModel(
         &self,
         _: vr::VROverlayHandle_t,
-        _: *mut std::os::raw::c_char,
+        _: *mut c_char,
         _: u32,
         _: *mut vr::HmdColor_t,
         _: *mut vr::EVROverlayError,

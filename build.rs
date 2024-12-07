@@ -157,8 +157,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .generate()?;
 
     let bindings = process_and_versionify_types(bindings.to_string().parse().unwrap());
-    let path = std::env::var("OUT_DIR")? + "/bindings.rs";
+    let out_dir = std::env::var("OUT_DIR")?;
+    let path = out_dir.clone() + "/bindings.rs";
     std::fs::write(&path, bindings).unwrap();
+    for path in shaders::compile(&out_dir) {
+        println!("cargo::rerun-if-changed={}", path.to_str().unwrap());
+    }
     Ok(())
 }
 

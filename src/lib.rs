@@ -27,6 +27,22 @@ impl Default for vr::ETrackingResult {
     }
 }
 
+impl vr::VRTextureBounds_t {
+    #[inline]
+    fn valid(&self) -> bool {
+        [self.uMin, self.uMax, self.vMin, self.vMax]
+            .into_iter()
+            .all(|bound| (0.0..=1.0).contains(&bound))
+            || self.uMin == self.uMax
+            || self.vMin == self.vMax
+    }
+
+    #[inline]
+    fn vertically_flipped(&self) -> bool {
+        self.vMin > self.vMax
+    }
+}
+
 /// Types that are interfaces.
 /// # Safety
 ///

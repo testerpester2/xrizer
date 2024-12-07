@@ -111,6 +111,34 @@ impl From<xr::Posef> for vr::HmdMatrix34_t {
     }
 }
 
+impl From<vr::HmdMatrix34_t> for xr::Posef {
+    fn from(mat: vr::HmdMatrix34_t) -> Self {
+        let mat = mat.m;
+        let pos = xr::Vector3f {
+            x: mat[0][3],
+            y: mat[1][3],
+            z: mat[2][3],
+        };
+        let rot = Quat::from_mat3(
+            &Mat3::from_cols(
+                Vec3::from_slice(&mat[0][..3]),
+                Vec3::from_slice(&mat[1][..3]),
+                Vec3::from_slice(&mat[2][..3]),
+            )
+            .transpose(),
+        );
+        xr::Posef {
+            position: pos,
+            orientation: xr::Quaternionf {
+                x: rot.x,
+                y: rot.y,
+                z: rot.z,
+                w: rot.w,
+            },
+        }
+    }
+}
+
 impl From<Affine3A> for vr::VRBoneTransform_t {
     fn from(value: Affine3A) -> Self {
         let (_, rot, pos) = value.to_scale_rotation_translation();

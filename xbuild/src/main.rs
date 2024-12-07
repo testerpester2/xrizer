@@ -21,28 +21,6 @@ enum Message {
     Unknown,
 }
 
-impl DeJson for Message {
-    fn de_json(
-        state: &mut nanoserde::DeJsonState,
-        input: &mut std::str::Chars,
-    ) -> Result<Self, nanoserde::DeJsonErr> {
-        state.curly_open(input)?;
-        let key = String::de_json(state, input)?;
-        if key != "reason" {
-            return Ok(Self::Unknown);
-        }
-        state.colon(input)?;
-        let reason = String::de_json(state, input)?;
-        match reason.as_str() {
-            "compiler-artifact" => {
-                let fixed: String = ['{', state.cur].into_iter().chain(input).collect();
-                let msg = Artifact::deserialize_json(&fixed).unwrap();
-                Ok(Self::CompilerArtifact(msg))
-            }
-            _ => Ok(Self::Unknown),
-        }
-    }
-}
 fn main() {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let mut cmd = Command::new(cargo)
@@ -108,6 +86,29 @@ fn main() {
         err => {
             eprintln!("Failed to create vrclient symlink: {err:?}");
             std::process::exit(1);
+        }
+    }
+}
+
+impl DeJson for Message {
+    fn de_json(
+        state: &mut nanoserde::DeJsonState,
+        input: &mut std::str::Chars,
+    ) -> Result<Self, nanoserde::DeJsonErr> {
+        state.curly_open(input)?;
+        let key = String::de_json(state, input)?;
+        if key != "reason" {
+            return Ok(Self::Unknown);
+        }
+        state.colon(input)?;
+        let reason = String::de_json(state, input)?;
+        match reason.as_str() {
+            "compiler-artifact" => {
+                let fixed: String = ['{', state.cur].into_iter().chain(input).collect();
+                let msg = Artifact::deserialize_json(&fixed).unwrap();
+                Ok(Self::CompilerArtifact(msg))
+            }
+            _ => Ok(Self::Unknown),
         }
     }
 }

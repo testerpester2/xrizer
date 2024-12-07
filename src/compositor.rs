@@ -2,6 +2,7 @@ use crate::{
     clientcore::{Injected, Injector},
     input::Input,
     openxr_data::{self, OpenXrData, SessionData},
+    overlay::OverlayMan,
     vr,
     vulkan::VulkanData,
 };
@@ -39,6 +40,7 @@ pub struct Compositor {
     input: Injected<Input<Self>>,
     tmp_backend: Mutex<Option<GraphicsApi>>,
     swapchain_create_info: Mutex<xr::SwapchainCreateInfo<xr::vulkan::Vulkan>>,
+    overlays: Injected<OverlayMan>,
 }
 
 impl Compositor {
@@ -48,6 +50,7 @@ impl Compositor {
             openxr,
             input: injector.inject(),
             tmp_backend: Mutex::default(),
+            overlays: injector.inject(),
             swapchain_create_info: Mutex::new(
                 // This will be overwritten before actually creating our swapchain.
                 xr::SwapchainCreateInfo {
@@ -238,6 +241,7 @@ impl vr::IVRCompositor028_Interface for Compositor {
             .instance
             .vulkan_legacy_device_extensions(self.openxr.system_id)
             .unwrap();
+        log::debug!("required device extensions: {exts}");
         let bytes = unsafe { &*(exts.as_bytes() as *const [u8] as *const [std::ffi::c_char]) };
         if !buffer.is_null() && buffer_size > 0 {
             let size = buffer_size as usize;
@@ -258,6 +262,7 @@ impl vr::IVRCompositor028_Interface for Compositor {
             .instance
             .vulkan_legacy_instance_extensions(self.openxr.system_id)
             .unwrap();
+        log::debug!("required instance extensions: {exts}");
         let bytes = unsafe { &*(exts.as_bytes() as *const [u8] as *const [std::ffi::c_char]) };
         if !buffer.is_null() && buffer_size > 0 {
             let size = buffer_size as usize;
@@ -428,12 +433,7 @@ impl vr::IVRCompositor028_Interface for Compositor {
             });
 
         // Superhot passes crazy bounds on startup.
-        if ![bounds.uMin, bounds.uMax, bounds.vMin, bounds.vMax]
-            .into_iter()
-            .all(|bound| (0.0..=1.0).contains(&bound))
-            || bounds.uMin == bounds.uMax
-            || bounds.vMin == bounds.vMax
-        {
+        if !bounds.valid() {
             return vr::EVRCompositorError::InvalidBounds;
         }
 
@@ -503,7 +503,7 @@ impl vr::IVRCompositor028_Interface for Compositor {
                     ctrl.image_index,
                     submit_flags,
                 ),
-                flip_vertically: bounds.vMin > bounds.vMax,
+                flip_vertically: bounds.vertically_flipped(),
             })
         } else {
             Some(Default::default())
@@ -519,7 +519,7 @@ impl vr::IVRCompositor028_Interface for Compositor {
         ctrl.swapchain.release_image().unwrap();
         ctrl.image_acquired = false;
 
-        let mut layers = Vec::new();
+        let mut proj_layer_views = Vec::new();
         if ctrl.should_render {
             let (flags, views) = session_lock
                 .session
@@ -530,7 +530,7 @@ impl vr::IVRCompositor028_Interface for Compositor {
                 )
                 .expect("Couldn't locate views");
 
-            layers = views
+            proj_layer_views = views
                 .into_iter()
                 .enumerate()
                 .map(|(eye_index, view)| {
@@ -573,17 +573,22 @@ impl vr::IVRCompositor028_Interface for Compositor {
         }
 
         let mut proj_layer = None;
-        if !layers.is_empty() {
+        if !proj_layer_views.is_empty() {
             proj_layer = Some(
                 xr::CompositionLayerProjection::new()
                     .space(session_lock.tracking_space())
-                    .views(&layers),
+                    .views(&proj_layer_views),
             );
         }
 
         let mut layers: Vec<&xr::CompositionLayerBase<_>> = Vec::new();
         if let Some(l) = proj_layer.as_ref() {
             layers.push(l);
+        }
+        let overlays;
+        if let Some(overlay_man) = self.overlays.get() {
+            overlays = overlay_man.get_layers(&session_lock);
+            layers.extend(overlays.iter().map(std::ops::Deref::deref));
         }
 
         ctrl.stream
@@ -709,10 +714,10 @@ impl GraphicsApi {
         bounds: vr::VRTextureBounds_t,
     ) -> xr::SwapchainCreateInfo<xr::vulkan::Vulkan> {
         match self {
-            Self::Vulkan(vk) => {
+            Self::Vulkan(_) => {
                 assert_eq!(texture.eType, vr::ETextureType::Vulkan);
                 let vk_texture = unsafe { &*(texture.handle as *const vr::VRVulkanTextureData_t) };
-                vk.get_swapchain_create_info(vk_texture, bounds, texture.eColorSpace)
+                VulkanData::get_swapchain_create_info(vk_texture, bounds, texture.eColorSpace)
             }
             #[cfg(test)]
             Self::Fake(f) => f.check_swapchain(texture, bounds),
@@ -753,8 +758,13 @@ impl GraphicsApi {
         match self {
             Self::Vulkan(vk) => {
                 assert_eq!(texture.eType, vr::ETextureType::Vulkan);
-                let vk_texture = unsafe { &*(texture.handle as *const vr::VRVulkanTextureData_t) };
-                vk.copy_texture_to_swapchain(eye, vk_texture, bounds, image_index, submit_flags)
+                vk.copy_texture_to_swapchain(
+                    eye,
+                    texture.handle.cast::<vr::VRVulkanTextureData_t>(),
+                    bounds,
+                    image_index,
+                    submit_flags,
+                )
             }
             #[cfg(test)]
             Self::Fake(_) => xr::Extent2Di::default(),

@@ -6,7 +6,7 @@ use crate::{
     vr::{self, IVRInput010_Interface},
 };
 use fakexr::UserPath::*;
-use glam::{Mat3, Quat, Vec3};
+use glam::Quat;
 use openxr as xr;
 use std::collections::HashSet;
 use std::f32::consts::FRAC_PI_4;
@@ -501,32 +501,6 @@ fn compare_pose(expected: xr::Posef, actual: xr::Posef) {
     );
 }
 
-fn hmdmatrix34_to_pose(mat: vr::HmdMatrix34_t) -> xr::Posef {
-    let mat = mat.m;
-    let pos = xr::Vector3f {
-        x: mat[0][3],
-        y: mat[1][3],
-        z: mat[2][3],
-    };
-    let rot = Quat::from_mat3(
-        &Mat3::from_cols(
-            Vec3::from_slice(&mat[0][..3]),
-            Vec3::from_slice(&mat[1][..3]),
-            Vec3::from_slice(&mat[2][..3]),
-        )
-        .transpose(),
-    );
-    xr::Posef {
-        position: pos,
-        orientation: xr::Quaternionf {
-            x: rot.x,
-            y: rot.y,
-            z: rot.z,
-            w: rot.w,
-        },
-    }
-}
-
 #[test]
 fn raw_pose_is_grip_at_aim() {
     let f = Fixture::new();
@@ -579,7 +553,7 @@ fn raw_pose_is_grip_at_aim() {
             position: aim.position,
             orientation: grip.orientation,
         },
-        hmdmatrix34_to_pose(pose.mDeviceToAbsoluteTracking),
+        pose.mDeviceToAbsoluteTracking.into(),
     );
 }
 
@@ -632,8 +606,8 @@ fn raw_pose_waitgetposes_and_skeletal_pose_identical() {
     );
     assert_eq!(ret, vr::EVRInputError::None);
     compare_pose(
-        hmdmatrix34_to_pose(waitgetposes_pose.mDeviceToAbsoluteTracking),
-        hmdmatrix34_to_pose(raw_pose.pose.mDeviceToAbsoluteTracking),
+        waitgetposes_pose.mDeviceToAbsoluteTracking.into(),
+        raw_pose.pose.mDeviceToAbsoluteTracking.into(),
     );
 
     let ret = f.input.GetPoseActionDataForNextFrame(
@@ -646,8 +620,8 @@ fn raw_pose_waitgetposes_and_skeletal_pose_identical() {
     assert_eq!(ret, vr::EVRInputError::None);
 
     compare_pose(
-        hmdmatrix34_to_pose(waitgetposes_pose.mDeviceToAbsoluteTracking),
-        hmdmatrix34_to_pose(skel_pose.pose.mDeviceToAbsoluteTracking),
+        waitgetposes_pose.mDeviceToAbsoluteTracking.into(),
+        skel_pose.pose.mDeviceToAbsoluteTracking.into(),
     );
 }
 
@@ -742,8 +716,7 @@ fn pose_action_no_restrict() {
         assert!(actual.bActive);
         let p = actual.pose;
         assert!(p.bPoseIsValid);
-        let actual = hmdmatrix34_to_pose(p.mDeviceToAbsoluteTracking);
-        compare_pose(expected, actual);
+        compare_pose(expected, p.mDeviceToAbsoluteTracking.into());
     }
 }
 

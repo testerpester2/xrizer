@@ -314,6 +314,7 @@ pub struct SessionData {
 
     pub input_data: crate::input::InputSessionData,
     pub comp_data: crate::compositor::CompositorSessionData,
+    pub overlay_data: crate::overlay::OverlaySessionData,
     /// OpenXR requires graphics information before creating a session, but OpenVR clients don't
     /// have to provide that information until they actually submit a frame. Yet, we need some
     /// information only available behind a session (i.e., calling xrLocateViews for
@@ -412,6 +413,7 @@ impl SessionData {
                 stage_space_adjusted,
                 input_data: Default::default(),
                 comp_data: Default::default(),
+                overlay_data: Default::default(),
                 current_origin,
             },
             waiter,
