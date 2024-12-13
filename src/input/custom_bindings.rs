@@ -46,7 +46,7 @@ impl BoolActionData {
         }
 
         if let Some(data) = &self.grab_data {
-            if let Some(state) = data.grabbed(session, subaction_path)? {
+            if let Some(state) = data.grabbed_bool(session, subaction_path)? {
                 return Ok(state);
             }
         }
@@ -90,8 +90,8 @@ impl FloatActionData {
         }
 
         if let Some(data) = &self.grab_data {
-            if data.grabbed(session, subaction_path)?.is_some() {
-                todo!("handle grab bindings for float actions");
+            if let Some(data) = data.grabbed(session, subaction_path)? {
+                return Ok(data);
             }
         }
 
@@ -116,7 +116,7 @@ pub(super) struct DpadData {
 
 impl DpadData {
     const CENTER_ZONE: f32 = 0.5;
-    pub fn state<G>(&self, session: &xr::Session<G>) -> xr::Result<Option<xr::ActionState<bool>>> {
+    fn state<G>(&self, session: &xr::Session<G>) -> xr::Result<Option<xr::ActionState<bool>>> {
         let parent_state = self.parent.state(session, xr::Path::NULL)?;
         let mut ret_state = xr::ActionState {
             current_state: false,
@@ -182,7 +182,12 @@ impl DpadData {
 pub(super) struct GrabBindingData {
     pub force_action: xr::Action<f32>,
     pub value_action: xr::Action<f32>,
-    pub last_state: [(xr::Path, AtomicBool); 2],
+    last_state: [GrabBindingState; 2],
+}
+
+struct GrabBindingState {
+    path: xr::Path,
+    grabbed: AtomicBool,
 }
 
 impl GrabBindingData {
@@ -191,7 +196,10 @@ impl GrabBindingData {
         Self {
             force_action: force,
             value_action: value,
-            last_state: paths.map(|p| (p, false.into())),
+            last_state: paths.map(|p| GrabBindingState {
+                path: p,
+                grabbed: false.into(),
+            }),
         }
     }
 
@@ -203,60 +211,95 @@ impl GrabBindingData {
     pub const RELEASE_THRESHOLD: f32 = 0.35;
 
     /// Returns None if the grab data is not active.
-    pub fn grabbed<G>(
+    fn grabbed<G>(
         &self,
         session: &xr::Session<G>,
         subaction_path: xr::Path,
-    ) -> xr::Result<Option<xr::ActionState<bool>>> {
+    ) -> xr::Result<Option<xr::ActionState<f32>>> {
         // FIXME: the way this function calculates changed_since_last_sync is incorrect, as it will
         // always be false if this is called more than once between syncs. What should be done is
         // the state should be updated in UpdateActionState, but that may have other implications
         // I currently don't feel like thinking about, as this works and I haven't seen games grab action
         // state more than once beteween syncs.
+
+        fn normalize(value: f32, range: std::ops::RangeInclusive<f32>) -> f32 {
+            (value - range.start()) / (range.end() - range.start())
+        }
+
         let force_state = self.force_action.state(session, subaction_path)?;
         let value_state = self.value_action.state(session, subaction_path)?;
         if !force_state.is_active || !value_state.is_active {
             Ok(None)
         } else {
-            let (grabbed, changed_since_last_sync) = match &self.last_state {
-                [(path, old_state), _] | [_, (path, old_state)] if *path == subaction_path => {
-                    let s = old_state.load(Ordering::Relaxed);
-                    let grabbed = (!s && force_state.current_state >= Self::GRAB_THRESHOLD)
-                        || (s && value_state.current_state > Self::RELEASE_THRESHOLD);
-                    let changed = old_state
-                        .compare_exchange(!grabbed, grabbed, Ordering::Relaxed, Ordering::Relaxed)
-                        .is_ok();
-                    (grabbed, changed)
+            let get_value = |prev_grabbed: bool| {
+                let value = if !prev_grabbed {
+                    normalize(force_state.current_state, 0.0..=Self::GRAB_THRESHOLD)
+                } else {
+                    normalize(value_state.current_state, Self::RELEASE_THRESHOLD..=1.0)
+                };
+
+                let changed = (!prev_grabbed && force_state.changed_since_last_sync)
+                    || value_state.changed_since_last_sync;
+
+                let grabbed = (prev_grabbed && value_state.current_state > Self::RELEASE_THRESHOLD)
+                    || (!prev_grabbed && force_state.current_state >= Self::GRAB_THRESHOLD);
+
+                (value, changed, grabbed)
+            };
+            let (value, changed_since_last_sync) = match &self.last_state {
+                [old_state, _] | [_, old_state] if old_state.path == subaction_path => {
+                    let prev_grabbed = old_state.grabbed.load(Ordering::Relaxed);
+                    let (value, changed, grabbed) = get_value(prev_grabbed);
+                    old_state.grabbed.store(grabbed, Ordering::Relaxed);
+                    (value, changed)
                 }
-                [(_, old_state1), (_, old_state2)] if subaction_path == xr::Path::NULL => {
-                    let s =
-                        old_state1.load(Ordering::Relaxed) || old_state2.load(Ordering::Relaxed);
-                    let grabbed = (!s && force_state.current_state >= Self::GRAB_THRESHOLD)
-                        || (s && value_state.current_state > Self::RELEASE_THRESHOLD);
-                    let cmpex = |state: &AtomicBool| {
-                        state
-                            .compare_exchange(
-                                !grabbed,
-                                grabbed,
-                                Ordering::Relaxed,
-                                Ordering::Relaxed,
-                            )
-                            .is_ok()
-                    };
-                    let changed1 = cmpex(old_state1);
-                    let changed2 = cmpex(old_state2);
-                    (grabbed, changed1 || changed2)
+                [old_state1, old_state2] if subaction_path == xr::Path::NULL => {
+                    let prev_grabbed = old_state1.grabbed.load(Ordering::Relaxed)
+                        || old_state2.grabbed.load(Ordering::Relaxed);
+                    let (value, changed, grabbed) = get_value(prev_grabbed);
+                    old_state1.grabbed.store(grabbed, Ordering::Relaxed);
+                    old_state2.grabbed.store(grabbed, Ordering::Relaxed);
+                    (value, changed)
                 }
                 _ => unreachable!(),
             };
 
             Ok(Some(xr::ActionState {
-                current_state: grabbed,
+                current_state: value,
                 changed_since_last_sync,
                 last_change_time: force_state.last_change_time,
                 is_active: true,
             }))
         }
+    }
+
+    fn grabbed_bool<G>(
+        &self,
+        session: &xr::Session<G>,
+        subaction_path: xr::Path,
+    ) -> xr::Result<Option<xr::ActionState<bool>>> {
+        let load_state = || match &self.last_state {
+            [state, _] | [_, state] if subaction_path == state.path => {
+                state.grabbed.load(Ordering::Relaxed)
+            }
+            [state1, state2] if subaction_path == xr::Path::NULL => {
+                state1.grabbed.load(Ordering::Relaxed) || state2.grabbed.load(Ordering::Relaxed)
+            }
+            _ => unreachable!(),
+        };
+
+        let old_state = load_state();
+        let Some(float_state) = self.grabbed(session, subaction_path)? else {
+            return Ok(None);
+        };
+        let state = load_state();
+
+        Ok(Some(xr::ActionState {
+            current_state: state,
+            changed_since_last_sync: old_state != state,
+            last_change_time: float_state.last_change_time,
+            is_active: float_state.is_active,
+        }))
     }
 }
 
@@ -273,7 +316,7 @@ impl ToggleData {
         }
     }
 
-    pub fn state<G>(
+    fn state<G>(
         &self,
         session: &xr::Session<G>,
         subaction_path: xr::Path,
