@@ -9,7 +9,10 @@ mod simple_controller;
 mod tests;
 mod vive_controller;
 
-use crate::openxr_data::{self, Hand, OpenXrData, SessionData};
+use crate::{
+    openxr_data::{self, Hand, OpenXrData, SessionData},
+    tracy_span,
+};
 use action_manifest::InteractionProfile;
 use custom_bindings::{BoolActionData, FloatActionData};
 use log::{debug, info, trace, warn};
@@ -920,6 +923,7 @@ impl<C: openxr_data::Compositor> Input<C> {
         poses: &mut [vr::TrackedDevicePose_t],
         origin: Option<vr::ETrackingUniverseOrigin>,
     ) {
+        tracy_span!();
         poses[0] = self.get_hmd_pose(origin);
 
         if poses.len() > Hand::Left as usize {
@@ -935,6 +939,7 @@ impl<C: openxr_data::Compositor> Input<C> {
     }
 
     fn get_hmd_pose(&self, origin: Option<vr::ETrackingUniverseOrigin>) -> vr::TrackedDevicePose_t {
+        tracy_span!();
         let data = self.openxr.session_data.get();
         let (hmd_location, hmd_velocity) = {
             data.view_space
@@ -954,6 +959,7 @@ impl<C: openxr_data::Compositor> Input<C> {
         hand: Hand,
         origin: Option<vr::ETrackingUniverseOrigin>,
     ) -> Option<vr::TrackedDevicePose_t> {
+        tracy_span!();
         let data = self.openxr.session_data.get();
         let actions = data.input_data.legacy_actions.get()?;
         let spaces = match hand {
@@ -1041,6 +1047,7 @@ impl<C: openxr_data::Compositor> Input<C> {
     }
 
     pub fn frame_start_update(&self) {
+        tracy_span!();
         let data = self.openxr.session_data.get();
         // If the game has loaded actions, we don't need to sync the state because the game should
         // be doing it itself (with UpdateActionState)

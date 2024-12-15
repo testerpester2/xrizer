@@ -7,6 +7,9 @@ resolver = "2"
 [lib]
 crate-type = ["cdylib"]
 
+[features]
+tracing = ["dep:tracy-client", "openvr/tracing"]
+
 [workspace]
 members = ["openvr", "shaders", "xbuild"]
 
@@ -17,6 +20,7 @@ openxr-sys = { git = "https://github.com/ralith/openxrs", rev = "d0afdd3", versi
 slotmap = "1.0.7"
 glam = "0.29.0"
 log = "0.4.22"
+tracy-client = "0.17.6"
 
 [dependencies]
 ash = { workspace = true }
@@ -32,6 +36,7 @@ serde = { version = "1.0.209", features = ["derive"] }
 serde_json = "1.0.127"
 slotmap = { workspace = true }
 time = { version = "0.3.36", features = ["formatting", "local-offset", "macros"] }
+tracy-client = { workspace = true, features = ["only-localhost", "demangle"], optional = true }
 
 [build-dependencies]
 shaders = { path = "shaders" }

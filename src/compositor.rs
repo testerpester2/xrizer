@@ -3,6 +3,7 @@ use crate::{
     input::Input,
     openxr_data::{self, OpenXrData, SessionData},
     overlay::OverlayMan,
+    tracy_span,
     vulkan::VulkanData,
 };
 use ash::vk::{self, Handle};
@@ -70,13 +71,18 @@ impl Compositor {
 
     /// Starts a frame if we've created our frame controller.
     fn maybe_start_frame(&self, session_data: &SessionData) {
-        let mut frame_lock = session_data.comp_data.0.lock().unwrap();
+        tracy_span!();
+        let mut frame_lock = {
+            tracy_span!("lock compositor data");
+            session_data.comp_data.0.lock().unwrap()
+        };
         let Some(ctrl) = frame_lock.as_mut() else {
             debug!("no frame controller - not starting frame");
             return;
         };
 
         if ctrl.image_acquired {
+            tracy_span!("release old swapchain image");
             ctrl.swapchain.release_image().unwrap();
         }
 
@@ -86,17 +92,26 @@ impl Compositor {
             .expect("Failed to acquire swapchain image") as usize;
 
         trace!("waiting image");
-        ctrl.swapchain
-            .wait_image(xr::Duration::INFINITE)
-            .expect("Failed to wait for swapchain image");
+        {
+            tracy_span!("wait swapchain image");
+            ctrl.swapchain
+                .wait_image(xr::Duration::INFINITE)
+                .expect("Failed to wait for swapchain image");
+        }
 
         ctrl.image_acquired = true;
-        let frame_state = ctrl.waiter.wait().unwrap();
+        let frame_state = {
+            tracy_span!("wait frame");
+            ctrl.waiter.wait().unwrap()
+        };
         ctrl.should_render = frame_state.should_render;
         self.openxr
             .display_time
             .set(frame_state.predicted_display_time);
-        ctrl.stream.begin().unwrap();
+        {
+            tracy_span!("begin frame");
+            ctrl.stream.begin().unwrap();
+        }
         ctrl.eyes_submitted = [None; 2];
         trace!("frame begin");
     }
@@ -599,6 +614,10 @@ impl vr::IVRCompositor028_Interface for Compositor {
             )
             .unwrap();
         trace!("frame submitted");
+        #[cfg(feature = "tracing")]
+        {
+            tracy_client::frame_mark();
+        }
 
         vr::EVRCompositorError::None
     }
@@ -618,6 +637,7 @@ impl vr::IVRCompositor028_Interface for Compositor {
         game_pose_array: *mut vr::TrackedDevicePose_t,
         game_pose_count: u32,
     ) -> vr::EVRCompositorError {
+        tracy_span!("GetLastPoses impl");
         if render_pose_count == 0 {
             return vr::EVRCompositorError::None;
         }
@@ -648,6 +668,7 @@ impl vr::IVRCompositor028_Interface for Compositor {
         game_pose_array: *mut vr::TrackedDevicePose_t,
         game_pose_count: u32,
     ) -> vr::EVRCompositorError {
+        tracy_span!("WaitGetPoses impl");
         // This should be called every frame - we must regularly poll events
         self.openxr.poll_events();
         {

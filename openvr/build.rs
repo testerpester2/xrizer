@@ -925,6 +925,8 @@ fn generate_vtable_trait(
             let call_args = fn_args_names_only.clone();
             parse_quote! {
                 extern "C" fn #fn_name<T: super::#trait_ident>(#(#params),*) #fn_output {
+                    #[cfg(feature = "tracing")]
+                    let _span = tracy_client::span!();
                     #fn_enter_log
                     let this = unsafe {
                         &*(this as *const _ as *const crate::VtableWrapper<super::#interface_ident, T>)
@@ -946,6 +948,8 @@ fn generate_vtable_trait(
                 format!("FnTable instance for {interface_name} has been destroyed");
             parse_quote! {
                 extern "C" fn #fn_name_fntable(#(#params),*) #fn_output {
+                    #[cfg(feature = "tracing")]
+                    let _span = tracy_client::span!();
                     #fn_enter_log
                     let this = FNTABLE_INSTANCE
                         .instance

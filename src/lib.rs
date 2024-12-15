@@ -33,6 +33,22 @@ macro_rules! warn_once {
 }
 use warn_once;
 
+#[cfg(feature = "tracing")]
+macro_rules! tracy_span {
+    ($($tt:tt)*) => {
+        let _span = tracy_client::span!($($tt)*);
+    }
+}
+
+#[cfg(not(feature = "tracing"))]
+macro_rules! tracy_span {
+    ($($tt:tt)*) => {};
+}
+use tracy_span;
+
+#[cfg(feature = "tracing")]
+tracy_client::register_demangler!();
+
 fn init_logging() {
     static ONCE: std::sync::Once = std::sync::Once::new();
 
