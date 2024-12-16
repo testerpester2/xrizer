@@ -1,7 +1,8 @@
 use crate::{
     clientcore::{Injected, Injector},
     input::Input,
-    openxr_data::{Hand, RealOpenXrData},
+    openxr_data::{Hand, RealOpenXrData, SessionData},
+    tracy_span,
 };
 use glam::{Mat3, Quat, Vec3};
 use log::{debug, warn};
@@ -10,13 +11,51 @@ use openxr as xr;
 use std::ffi::CStr;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc,
+    Arc, Mutex,
 };
 
 #[derive(Default)]
 struct ConnectedHands {
     left: AtomicBool,
     right: AtomicBool,
+}
+
+#[derive(Default)]
+struct ViewCache {
+    view: Option<[xr::View; 2]>,
+    local: Option<[xr::View; 2]>,
+    stage: Option<[xr::View; 2]>,
+}
+
+impl ViewCache {
+    fn get_views(
+        &mut self,
+        session: &SessionData,
+        display_time: xr::Time,
+        ty: xr::ReferenceSpaceType,
+    ) -> [xr::View; 2] {
+        let data = match ty {
+            xr::ReferenceSpaceType::VIEW => &mut self.view,
+            xr::ReferenceSpaceType::LOCAL => &mut self.local,
+            xr::ReferenceSpaceType::STAGE => &mut self.stage,
+            other => panic!("unexpected reference space type: {other:?}"),
+        };
+
+        *data.get_or_insert_with(|| {
+            let (_, views) = session
+                .session
+                .locate_views(
+                    xr::ViewConfigurationType::PRIMARY_STEREO,
+                    display_time,
+                    session.get_space_from_type(ty),
+                )
+                .expect("Couldn't locate views");
+
+            views
+                .try_into()
+                .unwrap_or_else(|v: Vec<xr::View>| panic!("Expected 2 views, got {}", v.len()))
+        })
+    }
 }
 
 #[derive(macros::InterfaceImpl)]
@@ -27,6 +66,7 @@ pub struct System {
     input: Injected<Input<crate::compositor::Compositor>>,
     vtables: Vtables,
     last_connected_hands: ConnectedHands,
+    views: Mutex<ViewCache>,
 }
 
 mod log_tags {
@@ -40,23 +80,21 @@ impl System {
             input: injector.inject(),
             vtables: Default::default(),
             last_connected_hands: Default::default(),
+            views: Mutex::default(),
         }
     }
 
-    fn get_views(&self) -> [xr::View; 2] {
-        let data = self.openxr.session_data.get();
-        let (_, views) = data
-            .session
-            .locate_views(
-                xr::ViewConfigurationType::PRIMARY_STEREO,
-                self.openxr.display_time.get(),
-                data.tracking_space(),
-            )
-            .expect("Couldn't locate views");
+    pub fn reset_views(&self) {
+        std::mem::take(&mut *self.views.lock().unwrap());
+    }
 
-        views
-            .try_into()
-            .unwrap_or_else(|v: Vec<xr::View>| panic!("Expected 2 views, got {}", v.len()))
+    fn get_views(&self, ty: xr::ReferenceSpaceType) -> [xr::View; 2] {
+        tracy_span!();
+        let session = self.openxr.session_data.get();
+        self.views
+            .lock()
+            .unwrap()
+            .get_views(&session, self.openxr.display_time.get(), ty)
     }
 }
 
@@ -107,7 +145,12 @@ impl vr::IVRSystem022_Interface for System {
         top: *mut f32,
         bottom: *mut f32,
     ) {
-        let view = self.get_views()[eye as usize];
+        let ty = self
+            .openxr
+            .session_data
+            .get()
+            .current_origin_as_reference_space();
+        let view = self.get_views(ty)[eye as usize];
 
         // Top and bottom are flipped, for some reason
         unsafe {
@@ -128,34 +171,27 @@ impl vr::IVRSystem022_Interface for System {
         false
     }
     fn GetEyeToHeadTransform(&self, eye: vr::EVREye) -> vr::HmdMatrix34_t {
-        let data = self.openxr.session_data.get();
-
-        let (_flags, views) = data
-            .session
-            .locate_views(
-                xr::ViewConfigurationType::PRIMARY_STEREO,
-                self.openxr.display_time.get(),
-                &data.view_space,
-            )
-            .expect("Couldn't locate views");
-
+        let views = self.get_views(xr::ReferenceSpaceType::VIEW);
         let view = views[eye as usize];
         let view_rot = view.pose.orientation;
 
-        let rot = Mat3::from_quat(Quat::from_xyzw(
-            view_rot.x, view_rot.y, view_rot.z, view_rot.w,
-        ))
-        .transpose();
+        {
+            tracy_span!("conversion");
+            let rot = Mat3::from_quat(Quat::from_xyzw(
+                view_rot.x, view_rot.y, view_rot.z, view_rot.w,
+            ))
+            .transpose();
 
-        let gen_array = |translation, rot_axis: Vec3| {
-            std::array::from_fn(|i| if i == 3 { translation } else { rot_axis[i] })
-        };
-        vr::HmdMatrix34_t {
-            m: [
-                gen_array(view.pose.position.x, rot.x_axis),
-                gen_array(view.pose.position.y, rot.y_axis),
-                gen_array(view.pose.position.z, rot.z_axis),
-            ],
+            let gen_array = |translation, rot_axis: Vec3| {
+                std::array::from_fn(|i| if i == 3 { translation } else { rot_axis[i] })
+            };
+            vr::HmdMatrix34_t {
+                m: [
+                    gen_array(view.pose.position.x, rot.x_axis),
+                    gen_array(view.pose.position.y, rot.y_axis),
+                    gen_array(view.pose.position.z, rot.z_axis),
+                ],
+            }
         }
     }
     fn GetTimeSinceLastVsync(&self, _: *mut f32, _: *mut u64) -> bool {
@@ -495,7 +531,7 @@ impl vr::IVRSystem022_Interface for System {
 
         match prop {
             vr::ETrackedDeviceProperty::UserIpdMeters_Float => {
-                let views = self.get_views();
+                let views = self.get_views(xr::ReferenceSpaceType::VIEW);
                 views[1].pose.position.x - views[0].pose.position.x
             }
             vr::ETrackedDeviceProperty::DisplayFrequency_Float => 90.0,

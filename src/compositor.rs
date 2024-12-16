@@ -3,6 +3,7 @@ use crate::{
     input::Input,
     openxr_data::{self, OpenXrData, SessionData},
     overlay::OverlayMan,
+    system::System,
     tracy_span,
     vulkan::VulkanData,
 };
@@ -39,6 +40,7 @@ pub struct Compositor {
     vtables: Vtables,
     openxr: Arc<OpenXrData<Self>>,
     input: Injected<Input<Self>>,
+    system: Injected<System>,
     tmp_backend: Mutex<Option<GraphicsApi>>,
     swapchain_create_info: Mutex<xr::SwapchainCreateInfo<xr::vulkan::Vulkan>>,
     overlays: Injected<OverlayMan>,
@@ -50,6 +52,7 @@ impl Compositor {
             vtables: Default::default(),
             openxr,
             input: injector.inject(),
+            system: injector.inject(),
             tmp_backend: Mutex::default(),
             overlays: injector.inject(),
             swapchain_create_info: Mutex::new(
@@ -674,6 +677,9 @@ impl vr::IVRCompositor028_Interface for Compositor {
         {
             let session_data = self.openxr.session_data.get();
             self.maybe_start_frame(&session_data);
+        }
+        if let Some(system) = self.system.get() {
+            system.reset_views();
         }
         if let Some(input) = self.input.get() {
             input.frame_start_update();

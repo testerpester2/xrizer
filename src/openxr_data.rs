@@ -425,10 +425,30 @@ impl SessionData {
         self.get_space_for_origin(self.current_origin)
     }
 
+    #[inline]
     pub fn get_space_for_origin(&self, origin: vr::ETrackingUniverseOrigin) -> &xr::Space {
         match origin {
             vr::ETrackingUniverseOrigin::Seated => &self.local_space_adjusted,
             vr::ETrackingUniverseOrigin::Standing => &self.stage_space_adjusted,
+            vr::ETrackingUniverseOrigin::RawAndUncalibrated => unreachable!(),
+        }
+    }
+
+    #[inline]
+    pub fn get_space_from_type(&self, ty: xr::ReferenceSpaceType) -> &xr::Space {
+        match ty {
+            xr::ReferenceSpaceType::VIEW => &self.view_space,
+            xr::ReferenceSpaceType::LOCAL => &self.local_space_adjusted,
+            xr::ReferenceSpaceType::STAGE => &self.stage_space_adjusted,
+            other => panic!("Unsupported reference space type: {other:?}"),
+        }
+    }
+
+    #[inline]
+    pub fn current_origin_as_reference_space(&self) -> xr::ReferenceSpaceType {
+        match self.current_origin {
+            vr::ETrackingUniverseOrigin::Seated => xr::ReferenceSpaceType::LOCAL,
+            vr::ETrackingUniverseOrigin::Standing => xr::ReferenceSpaceType::STAGE,
             vr::ETrackingUniverseOrigin::RawAndUncalibrated => unreachable!(),
         }
     }
