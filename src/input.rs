@@ -641,10 +641,9 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
             ActionData::Vector1(data) => {
                 let state = data.state(&session_data.session, subaction_path).unwrap();
                 let delta = xr::Vector2f {
-                    x: state.current_state - data.last_value.load(),
+                    x: state.current_state - data.last_value.swap(state.current_state),
                     y: 0.0,
                 };
-                data.last_value.store(state.current_state);
                 (
                     xr::ActionState::<xr::Vector2f> {
                         current_state: xr::Vector2f {
@@ -661,11 +660,9 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
             ActionData::Vector2 { action, last_value } => {
                 let state = action.state(&session_data.session, subaction_path).unwrap();
                 let delta = xr::Vector2f {
-                    x: state.current_state.x - last_value.0.load(),
-                    y: state.current_state.y - last_value.1.load(),
+                    x: state.current_state.x - last_value.0.swap(state.current_state.x),
+                    y: state.current_state.y - last_value.1.swap(state.current_state.y),
                 };
-                last_value.0.store(state.current_state.x);
-                last_value.1.store(state.current_state.y);
                 (state, delta)
             }
             _ => return vr::EVRInputError::WrongType,
@@ -1339,12 +1336,8 @@ impl AtomicF32 {
         Self(value.to_bits().into())
     }
 
-    fn load(&self) -> f32 {
-        f32::from_bits(self.0.load(Ordering::Relaxed))
-    }
-
-    fn store(&self, value: f32) {
-        self.0.store(value.to_bits(), Ordering::Relaxed)
+    fn swap(&self, value: f32) -> f32 {
+        f32::from_bits(self.0.swap(value.to_bits(), Ordering::Relaxed))
     }
 }
 
