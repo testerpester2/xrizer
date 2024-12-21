@@ -5,7 +5,7 @@ use crate::{
     tracy_span,
 };
 use glam::{Mat3, Quat, Vec3};
-use log::{debug, warn};
+use log::{debug, trace, warn};
 use openvr as vr;
 use openxr as xr;
 use std::ffi::CStr;
@@ -275,6 +275,7 @@ impl vr::IVRSystem022_Interface for System {
             return Default::default();
         }
 
+        debug!("GetHiddenAreaMesh: area mesh type: {ty:?}");
         let mask_ty = match ty {
             vr::EHiddenAreaMeshType::Standard => xr::VisibilityMaskTypeKHR::HIDDEN_TRIANGLE_MESH,
             vr::EHiddenAreaMeshType::Inverse => xr::VisibilityMaskTypeKHR::VISIBLE_TRIANGLE_MESH,
@@ -295,17 +296,30 @@ impl vr::IVRSystem022_Interface for System {
             )
             .unwrap();
 
+        trace!("openxr mask: {:#?} {:#?}", mask.indices, mask.vertices);
+
+        let [mut left, mut right, mut top, mut bottom] = [0.0; 4];
+        self.GetProjectionRaw(eye, &mut left, &mut right, &mut top, &mut bottom);
+
         // convert from indices + vertices to just vertices
         let vertices: Vec<_> = mask
             .indices
             .into_iter()
             .map(|i| {
                 let v = mask.vertices[i as usize];
-                vr::HmdVector2_t { v: [v.x, v.y] }
+
+                // It is unclear to me why this scaling is necessary, but OpenComposite does it and
+                // it seems to get games to use the mask correctly.
+                let x_scaled = (v.x - left) / (right - left);
+                let y_scaled = (v.y - top) / (bottom - top);
+                vr::HmdVector2_t {
+                    v: [x_scaled, y_scaled],
+                }
             })
             .collect();
 
-        let count = vertices.len();
+        trace!("vertices: {vertices:#?}");
+        let count = vertices.len() / 3;
         // XXX: what are we supposed to do here? pVertexData is a random pointer and there's no
         // clear way for the application to deallocate it
         // fortunately it seems like applications don't call this often, so this leakage isn't a
@@ -314,7 +328,7 @@ impl vr::IVRSystem022_Interface for System {
 
         vr::HiddenAreaMesh_t {
             pVertexData: vertices,
-            unTriangleCount: count as u32 / 3,
+            unTriangleCount: count as u32,
         }
     }
     fn GetEventTypeNameFromEnum(&self, _: vr::EVREventType) -> *const std::os::raw::c_char {
