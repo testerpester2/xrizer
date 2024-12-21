@@ -11,7 +11,7 @@ mod vive_controller;
 
 use crate::{
     openxr_data::{self, Hand, OpenXrData, SessionData},
-    tracy_span,
+    tracy_span, AtomicF32,
 };
 use action_manifest::InteractionProfile;
 use custom_bindings::{BoolActionData, FloatActionData};
@@ -1326,23 +1326,5 @@ impl LegacyActions {
             left_spaces,
             right_spaces,
         }
-    }
-}
-
-#[derive(Default)]
-struct AtomicF32(AtomicU32);
-impl AtomicF32 {
-    fn new(value: f32) -> Self {
-        Self(value.to_bits().into())
-    }
-
-    fn swap(&self, value: f32) -> f32 {
-        f32::from_bits(self.0.swap(value.to_bits(), Ordering::Relaxed))
-    }
-}
-
-impl From<f32> for AtomicF32 {
-    fn from(value: f32) -> Self {
-        Self::new(value)
     }
 }

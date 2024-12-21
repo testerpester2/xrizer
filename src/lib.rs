@@ -15,7 +15,10 @@ mod vulkan;
 use clientcore::ClientCore;
 use openvr as vr;
 use std::ffi::{c_char, c_void, CStr};
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicU32, AtomicU64, Ordering},
+    Arc,
+};
 
 macro_rules! warn_unimplemented {
     ($function:literal) => {
@@ -48,6 +51,46 @@ use tracy_span;
 
 #[cfg(feature = "tracing")]
 tracy_client::register_demangler!();
+
+macro_rules! atomic_float {
+    ($name:ident, $float:ty, $atomic:ty) => {
+        #[derive(Default)]
+        struct $name($atomic);
+
+        impl $name {
+            fn new(value: $float) -> Self {
+                Self(value.to_bits().into())
+            }
+
+            #[allow(dead_code)]
+            #[inline]
+            fn load(&self) -> $float {
+                <$float>::from_bits(self.0.load(Ordering::Relaxed))
+            }
+
+            #[allow(dead_code)]
+            #[inline]
+            fn store(&self, value: $float) {
+                self.0.store(value.to_bits(), Ordering::Relaxed)
+            }
+
+            #[allow(dead_code)]
+            #[inline]
+            fn swap(&self, value: $float) -> $float {
+                <$float>::from_bits(self.0.swap(value.to_bits(), Ordering::Relaxed))
+            }
+        }
+
+        impl From<$float> for $name {
+            fn from(value: $float) -> Self {
+                Self::new(value)
+            }
+        }
+    };
+}
+
+atomic_float!(AtomicF32, f32, AtomicU32);
+atomic_float!(AtomicF64, f64, AtomicU64);
 
 fn init_logging() {
     static ONCE: std::sync::Once = std::sync::Once::new();

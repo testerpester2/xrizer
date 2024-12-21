@@ -29,6 +29,7 @@ static MANUAL_DERIVE_DEFAULT: &[&str] = &[
     // Have a vr::ETrackingResult member
     "TrackedDevicePose_t",
     "InputPoseActionData_t",
+    "Compositor_FrameTiming",
 ];
 
 #[derive(Debug)]

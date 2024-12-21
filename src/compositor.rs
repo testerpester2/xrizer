@@ -6,12 +6,18 @@ use crate::{
     system::System,
     tracy_span,
     vulkan::VulkanData,
+    AtomicF64,
 };
 use ash::vk::{self, Handle};
 use log::{debug, info, trace};
 use openvr as vr;
 use openxr as xr;
-use std::sync::{Arc, Mutex};
+use std::mem::offset_of;
+use std::sync::{
+    atomic::{AtomicU32, Ordering},
+    Arc, Mutex,
+};
+use std::time::Instant;
 
 struct FrameController {
     stream: xr::FrameStream<xr::vulkan::Vulkan>,
@@ -30,6 +36,12 @@ struct SubmittedEye {
     flip_vertically: bool,
 }
 
+struct FrameMetrics {
+    system_start: Instant,
+    index: AtomicU32,
+    time: AtomicF64,
+}
+
 #[derive(Default)]
 pub struct CompositorSessionData(Mutex<Option<FrameController>>);
 
@@ -44,6 +56,7 @@ pub struct Compositor {
     tmp_backend: Mutex<Option<GraphicsApi>>,
     swapchain_create_info: Mutex<xr::SwapchainCreateInfo<xr::vulkan::Vulkan>>,
     overlays: Injected<OverlayMan>,
+    metrics: FrameMetrics,
 }
 
 impl Compositor {
@@ -69,6 +82,11 @@ impl Compositor {
                     mip_count: 0,
                 },
             ),
+            metrics: FrameMetrics {
+                system_start: Instant::now(),
+                index: 0.into(),
+                time: 0.0.into(),
+            },
         }
     }
 
@@ -413,9 +431,61 @@ impl vr::IVRCompositor028_Interface for Compositor {
     fn GetFrameTimings(&self, _pTiming: *mut vr::Compositor_FrameTiming, _nFrames: u32) -> u32 {
         todo!()
     }
-    fn GetFrameTiming(&self, _pTiming: *mut vr::Compositor_FrameTiming, _unFramesAgo: u32) -> bool {
-        crate::warn_unimplemented!("GetFrameTiming");
-        false
+    fn GetFrameTiming(&self, timing: *mut vr::Compositor_FrameTiming, _frames_ago: u32) -> bool {
+        if timing.is_null() || !timing.is_aligned() {
+            return false;
+        }
+
+        let size = unsafe { (&raw const (*timing).m_nSize).read() } as usize;
+        fn ptr_size<T>(_: *const T) -> usize {
+            std::mem::size_of::<T>()
+        }
+        if size
+            < offset_of!(vr::Compositor_FrameTiming, m_HmdPose)
+                + ptr_size(unsafe { &raw const (*timing).m_HmdPose })
+        {
+            return false;
+        }
+        // We're using raw pointers here because the Compositor_FrameTiming struct can be a
+        // varaible size, so we don't want to create a reference to a struct with an incorrect
+        // (to us) size, because that would be Undefined Behavior.
+        macro_rules! set {
+            ($member:ident, $value:expr) => {{
+                let ptr = &raw mut (*timing).$member;
+                ptr.write_unaligned($value)
+            }};
+        }
+
+        unsafe {
+            // TODO: These values are copy/pasted from OpenComposite, determine if real values are
+            // necessary/better
+            set!(m_nFrameIndex, self.metrics.index.load(Ordering::Relaxed));
+            set!(m_nNumFramePresents, 1);
+            set!(m_nNumMisPresented, 0);
+            set!(m_nReprojectionFlags, 0);
+            set!(m_flSystemTimeInSeconds, self.metrics.time.load());
+            set!(m_flPreSubmitGpuMs, 8.0);
+            set!(m_flPostSubmitGpuMs, 1.0);
+            set!(m_flTotalRenderGpuMs, 9.0);
+
+            set!(m_flCompositorRenderGpuMs, 1.5);
+            set!(m_flCompositorRenderCpuMs, 3.0);
+            set!(m_flCompositorIdleCpuMs, 0.1);
+
+            set!(m_flClientFrameIntervalMs, 11.1);
+            set!(m_flPresentCallCpuMs, 0.0);
+            set!(m_flWaitForPresentCpuMs, 0.0);
+            set!(m_flSubmitFrameMs, 0.0);
+
+            set!(m_flWaitGetPosesCalledMs, 0.0);
+            set!(m_flNewPosesReadyMs, 0.0);
+            set!(m_flNewFrameReadyMs, 0.0); // second call to IVRCompositor::Submit
+            set!(m_flCompositorUpdateStartMs, 0.0);
+            set!(m_flCompositorUpdateEndMs, 0.0);
+            set!(m_flCompositorRenderStartMs, 0.0);
+        }
+
+        true
     }
     fn PostPresentHandoff(&self) {
         crate::warn_unimplemented!("PostPresentHandoff");
@@ -617,6 +687,10 @@ impl vr::IVRCompositor028_Interface for Compositor {
             )
             .unwrap();
         trace!("frame submitted");
+        self.metrics.index.fetch_add(1, Ordering::Relaxed);
+        self.metrics
+            .time
+            .store(self.metrics.system_start.elapsed().as_secs_f64());
         #[cfg(feature = "tracing")]
         {
             tracy_client::frame_mark();
@@ -803,6 +877,7 @@ impl GraphicsApi {
 mod tests {
     use super::*;
     use std::cell::Cell;
+    use std::mem::MaybeUninit;
     use std::thread_local;
     use vr::EVRCompositorError::*;
     use vr::IVRCompositor028_Interface;
@@ -988,5 +1063,30 @@ mod tests {
         assert_eq!(f.submit(vr::EVREye::Left), None);
         WIDTH.set(40);
         assert_eq!(f.submit(vr::EVREye::Right), None);
+    }
+
+    #[test]
+    fn get_frame_timing() {
+        let f = Fixture::new();
+        assert_eq!(f.wait_get_poses(), None);
+        assert_eq!(f.submit(vr::EVREye::Left), None);
+        assert_eq!(f.submit(vr::EVREye::Right), None);
+
+        let mut timing = MaybeUninit::new(vr::Compositor_FrameTiming::default());
+        unsafe {
+            (&raw mut (*timing.as_mut_ptr()).m_nSize)
+                .write(std::mem::size_of::<vr::Compositor_FrameTiming>() as u32);
+        }
+        assert!(f.comp.GetFrameTiming(timing.as_mut_ptr(), 1));
+        let small_size = std::mem::offset_of!(vr::Compositor_FrameTiming, m_HmdPose)
+            + std::mem::size_of::<vr::TrackedDevicePose_t>();
+        unsafe {
+            (&raw mut (*timing.as_mut_ptr()).m_nSize).write(small_size as u32);
+        }
+        assert!(f.comp.GetFrameTiming(timing.as_mut_ptr(), 1));
+        unsafe {
+            (&raw mut (*timing.as_mut_ptr()).m_nSize).write(0);
+        }
+        assert!(!f.comp.GetFrameTiming(timing.as_mut_ptr(), 1));
     }
 }
