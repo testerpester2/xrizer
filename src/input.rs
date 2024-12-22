@@ -24,7 +24,7 @@ use std::ffi::{c_char, CStr, CString};
 use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicU32, Ordering},
-    Arc, OnceLock, RwLock,
+    Arc, Mutex, OnceLock, RwLock,
 };
 
 new_key_type! {
@@ -45,6 +45,7 @@ pub struct Input<C: openxr_data::Compositor> {
     action_map: RwLock<SlotMap<ActionKey, Action>>,
     set_map: RwLock<SlotMap<ActionSetKey, String>>,
     loaded_actions_path: OnceLock<PathBuf>,
+    cached_poses: Mutex<CachedSpaces>,
 }
 
 impl<C: openxr_data::Compositor> Input<C> {
@@ -61,6 +62,7 @@ impl<C: openxr_data::Compositor> Input<C> {
             loaded_actions_path: OnceLock::new(),
             left_hand_key,
             right_hand_key,
+            cached_poses: Mutex::default(),
         }
     }
 
@@ -754,24 +756,30 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
             return vr::EVRInputError::InvalidParam;
         };
 
+        let set_map = self.set_map.read().unwrap();
         let mut sync_sets = Vec::with_capacity(active_sets.len() + 1);
-        for set in active_sets {
-            let key = ActionSetKey::from(KeyData::from_ffi(set.ulActionSet));
-            let m = self.set_map.read().unwrap();
-            let name = m.get(key);
-            let Some(set) = actions.sets.get(key) else {
-                debug!("Application passed invalid action set key: {key:?} ({name:?})");
-                return vr::EVRInputError::InvalidHandle;
-            };
-            debug!("Activating set {}", name.unwrap());
-            sync_sets.push(set.into());
+        {
+            tracy_span!("UpdateActionState generate active sets");
+            for set in active_sets {
+                let key = ActionSetKey::from(KeyData::from_ffi(set.ulActionSet));
+                let name = set_map.get(key);
+                let Some(set) = actions.sets.get(key) else {
+                    debug!("Application passed invalid action set key: {key:?} ({name:?})");
+                    return vr::EVRInputError::InvalidHandle;
+                };
+                debug!("Activating set {}", name.unwrap());
+                sync_sets.push(set.into());
+            }
+
+            let legacy = data.input_data.legacy_actions.get().unwrap();
+            sync_sets.push(xr::ActiveActionSet::new(&legacy.set));
+            legacy.packet_num.fetch_add(1, Ordering::Relaxed);
         }
 
-        let legacy = data.input_data.legacy_actions.get().unwrap();
-        sync_sets.push(xr::ActiveActionSet::new(&legacy.set));
-        legacy.packet_num.fetch_add(1, Ordering::Relaxed);
-
-        data.session.sync_actions(&sync_sets).unwrap();
+        {
+            tracy_span!("xrSyncActions");
+            data.session.sync_actions(&sync_sets).unwrap();
+        }
 
         vr::EVRInputError::None
     }
@@ -957,27 +965,14 @@ impl<C: openxr_data::Compositor> Input<C> {
         origin: Option<vr::ETrackingUniverseOrigin>,
     ) -> Option<vr::TrackedDevicePose_t> {
         tracy_span!();
+        let mut spaces = self.cached_poses.lock().unwrap();
         let data = self.openxr.session_data.get();
-        let actions = data.input_data.legacy_actions.get()?;
-        let spaces = match hand {
-            Hand::Left => &actions.left_spaces,
-            Hand::Right => &actions.right_spaces,
-        };
-
-        let (loc, velo) = if let Some(raw) =
-            spaces.try_get_or_init_raw(&data, actions, self.openxr.display_time.get())
-        {
-            raw.relate(
-                data.get_space_for_origin(origin.unwrap_or(data.current_origin)),
-                self.openxr.display_time.get(),
-            )
-            .unwrap()
-        } else {
-            trace!("failed to get raw space, making empty pose");
-            (xr::SpaceLocation::default(), xr::SpaceVelocity::default())
-        };
-
-        Some(space_relation_to_openvr_pose(loc, velo))
+        spaces.get_pose_impl(
+            &data,
+            self.openxr.display_time.get(),
+            hand,
+            origin.unwrap_or(data.current_origin),
+        )
     }
 
     pub fn get_legacy_controller_state(
@@ -1045,6 +1040,7 @@ impl<C: openxr_data::Compositor> Input<C> {
 
     pub fn frame_start_update(&self) {
         tracy_span!();
+        std::mem::take(&mut *self.cached_poses.lock().unwrap());
         let data = self.openxr.session_data.get();
         // If the game has loaded actions, we don't need to sync the state because the game should
         // be doing it itself (with UpdateActionState)
@@ -1155,6 +1151,62 @@ impl<C: openxr_data::Compositor> Input<C> {
         if let Some(path) = self.loaded_actions_path.get() {
             self.load_action_manifest(data, path).unwrap();
         }
+    }
+}
+
+#[derive(Default)]
+struct CachedSpaces {
+    seated: CachedPoses,
+    standing: CachedPoses,
+}
+
+#[derive(Default)]
+struct CachedPoses {
+    left: Option<vr::TrackedDevicePose_t>,
+    right: Option<vr::TrackedDevicePose_t>,
+}
+
+impl CachedSpaces {
+    fn get_pose_impl(
+        &mut self,
+        session_data: &SessionData,
+        display_time: xr::Time,
+        hand: Hand,
+        origin: vr::ETrackingUniverseOrigin,
+    ) -> Option<vr::TrackedDevicePose_t> {
+        tracy_span!();
+        let space = match origin {
+            vr::ETrackingUniverseOrigin::Seated => &mut self.seated,
+            vr::ETrackingUniverseOrigin::Standing => &mut self.standing,
+            vr::ETrackingUniverseOrigin::RawAndUncalibrated => unreachable!(),
+        };
+
+        let pose = match hand {
+            Hand::Left => &mut space.left,
+            Hand::Right => &mut space.right,
+        };
+
+        if let Some(pose) = pose {
+            return Some(*pose);
+        }
+
+        let actions = session_data.input_data.legacy_actions.get()?;
+        let spaces = match hand {
+            Hand::Left => &actions.left_spaces,
+            Hand::Right => &actions.right_spaces,
+        };
+
+        let (loc, velo) =
+            if let Some(raw) = spaces.try_get_or_init_raw(session_data, actions, display_time) {
+                raw.relate(session_data.get_space_for_origin(origin), display_time)
+                    .unwrap()
+            } else {
+                trace!("failed to get raw space, making empty pose");
+                (xr::SpaceLocation::default(), xr::SpaceVelocity::default())
+            };
+
+        let ret = space_relation_to_openvr_pose(loc, velo);
+        Some(*pose.insert(ret))
     }
 }
 
