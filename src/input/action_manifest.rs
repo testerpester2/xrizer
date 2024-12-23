@@ -2,10 +2,11 @@ use super::{
     custom_bindings::{
         BoolActionData, DpadData, DpadDirection, FloatActionData, GrabBindingData, ToggleData,
     },
-    knuckles::Knuckles,
     legacy::{LegacyActionData, LegacyActions, LegacyBindings},
-    oculus_touch::Touch,
-    vive_controller::ViveWands,
+    profiles::{
+        knuckles::Knuckles, oculus_touch::Touch, simple_controller::SimpleController,
+        vive_controller::ViveWands,
+    },
     BoundPoseType, Input,
 };
 use crate::openxr_data::{self, Hand, SessionData};
@@ -779,7 +780,7 @@ impl<C: openxr_data::Compositor> Input<C> {
                             legacy_actions,
                             &bindings,
                         );
-                        self.load_bindings_for_profile::<super::simple_controller::SimpleController>(
+                        self.load_bindings_for_profile::<SimpleController>(
                             action_sets,
                             actions,
                             legacy_actions,
@@ -1564,7 +1565,8 @@ pub(super) trait ForEachProfile {
 
 /// Add all supported interaction profiles here.
 pub(super) fn for_each_profile_fn<F: ForEachProfile>(mut f: F) {
-    f.call::<super::vive_controller::ViveWands>();
-    f.call::<super::knuckles::Knuckles>();
-    f.call::<super::simple_controller::SimpleController>();
+    f.call::<ViveWands>();
+    f.call::<Knuckles>();
+    f.call::<SimpleController>();
+    f.call::<Touch>();
 }

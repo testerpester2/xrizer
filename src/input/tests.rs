@@ -1,5 +1,6 @@
 use super::{
-    knuckles::Knuckles, vive_controller::ViveWands, ActionData, Input, InteractionProfile,
+    profiles::{knuckles::Knuckles, vive_controller::ViveWands},
+    ActionData, Input, InteractionProfile,
 };
 use crate::{
     openxr_data::OpenXrData,

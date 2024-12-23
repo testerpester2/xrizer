@@ -1,4 +1,4 @@
-use super::{
+use crate::input::{
     action_manifest::{PathTranslation, StringToPath},
     legacy::LegacyBindings,
     InteractionProfile,

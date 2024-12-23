@@ -1,14 +1,11 @@
 mod action_manifest;
 mod custom_bindings;
 mod legacy;
+mod profiles;
 mod skeletal;
 
-mod knuckles;
-mod oculus_touch;
-mod simple_controller;
 #[cfg(test)]
 mod tests;
-mod vive_controller;
 
 use crate::{
     openxr_data::{self, Hand, OpenXrData, SessionData},
