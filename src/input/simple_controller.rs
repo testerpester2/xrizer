@@ -1,8 +1,7 @@
 use super::{
-    action_manifest::{InteractionProfile, PathTranslation},
-    LegacyActions,
+    action_manifest::{InteractionProfile, PathTranslation, StringToPath},
+    legacy::LegacyBindings,
 };
-use openxr as xr;
 use std::ffi::CStr;
 
 pub struct SimpleController;
@@ -24,33 +23,15 @@ impl InteractionProfile for SimpleController {
         },
     ];
 
-    fn legacy_bindings(
-        string_to_path: impl for<'a> Fn(&'a str) -> openxr::Path,
-        actions: &LegacyActions,
-    ) -> Vec<openxr::Binding> {
-        let mut ret = Vec::new();
-        let stp = string_to_path;
-        macro_rules! both {
-            ($action:expr, $path:expr) => {
-                ret.push(xr::Binding::new(
-                    $action,
-                    stp(concat!("/user/hand/left/", $path)),
-                ));
-                ret.push(xr::Binding::new(
-                    $action,
-                    stp(concat!("/user/hand/right/", $path)),
-                ));
-            };
+    fn legacy_bindings(stp: impl StringToPath) -> LegacyBindings {
+        LegacyBindings {
+            grip_pose: stp.leftright("input/grip/pose"),
+            aim_pose: stp.leftright("input/aim/pose"),
+            trigger: stp.leftright("input/select/click"),
+            trigger_click: stp.leftright("input/select/click"),
+            app_menu: stp.leftright("input/menu/click"),
+            squeeze: stp.leftright("input/menu/click"),
         }
-
-        both!(&actions.grip_pose, "input/grip/pose");
-        both!(&actions.aim_pose, "input/aim/pose");
-        both!(&actions.trigger, "input/select/click");
-        both!(&actions.trigger_click, "input/select/click");
-        both!(&actions.app_menu, "input/menu/click");
-        both!(&actions.squeeze, "input/menu/click");
-
-        ret
     }
 
     fn legal_paths() -> Box<[String]> {

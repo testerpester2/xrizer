@@ -1,8 +1,7 @@
 use super::{
-    action_manifest::{InteractionProfile, PathTranslation},
-    LegacyActions,
+    action_manifest::{InteractionProfile, PathTranslation, StringToPath},
+    legacy::LegacyBindings,
 };
-use openxr as xr;
 use std::ffi::CStr;
 
 pub struct Touch;
@@ -44,36 +43,15 @@ impl InteractionProfile for Touch {
         },
     ];
 
-    fn legacy_bindings(
-        string_to_path: impl for<'a> Fn(&'a str) -> openxr::Path,
-        actions: &LegacyActions,
-    ) -> Vec<openxr::Binding> {
-        let mut bindings = Vec::new();
-
-        macro_rules! add_binding {
-            ($action:expr, $suffix:literal) => {
-                bindings.push(xr::Binding::new(
-                    $action,
-                    string_to_path(concat!("/user/hand/left/", $suffix)),
-                ));
-                bindings.push(xr::Binding::new(
-                    $action,
-                    string_to_path(concat!("/user/hand/right/", $suffix)),
-                ));
-            };
+    fn legacy_bindings(stp: impl StringToPath) -> LegacyBindings {
+        LegacyBindings {
+            grip_pose: stp.leftright("input/grip/pose"),
+            aim_pose: stp.leftright("input/aim/pose"),
+            trigger: stp.leftright("input/trigger/value"),
+            trigger_click: stp.leftright("input/trigger/value"),
+            app_menu: vec![], // TODO
+            squeeze: stp.leftright("input/squeeze/value"),
         }
-
-        bindings.push(xr::Binding::new(
-            &actions.app_menu,
-            string_to_path("/user/hand/left/input/menu/click"),
-        ));
-        add_binding!(&actions.grip_pose, "input/grip/pose");
-        add_binding!(&actions.aim_pose, "input/aim/pose");
-        add_binding!(&actions.trigger, "input/trigger/value");
-        add_binding!(&actions.trigger_click, "input/trigger/value");
-        add_binding!(&actions.squeeze, "input/squeeze/value");
-
-        bindings
     }
 
     fn legal_paths() -> Box<[String]> {
@@ -123,8 +101,9 @@ impl InteractionProfile for Touch {
 
 #[cfg(test)]
 mod tests {
-    use super::{xr, InteractionProfile, Touch};
+    use super::{InteractionProfile, Touch};
     use crate::input::tests::Fixture;
+    use openxr as xr;
 
     #[test]
     fn verify_bindings() {

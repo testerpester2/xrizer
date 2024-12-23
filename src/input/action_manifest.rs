@@ -3,6 +3,7 @@ use super::{
         BoolActionData, DpadData, DpadDirection, FloatActionData, GrabBindingData, ToggleData,
     },
     knuckles::Knuckles,
+    legacy::{LegacyActionData, LegacyActions, LegacyBindings},
     oculus_touch::Touch,
     vive_controller::ViveWands,
     BoundPoseType, Input,
@@ -74,7 +75,7 @@ impl<C: openxr_data::Compositor> Input<C> {
         // Games can mix legacy and normal input, and the legacy bindings are used for
         // WaitGetPoses, so attach the legacy set here as well.
         let legacy = session_data.input_data.legacy_actions.get_or_init(|| {
-            super::LegacyActions::new(
+            LegacyActionData::new(
                 &self.openxr.instance,
                 &session_data.session,
                 self.openxr.left_hand.subaction_path,
@@ -87,7 +88,7 @@ impl<C: openxr_data::Compositor> Input<C> {
             &sets,
             &mut actions,
             manifest.default_bindings,
-            legacy,
+            &legacy.actions,
         );
 
         let xr_sets: Vec<_> = sets.values().chain(std::iter::once(&legacy.set)).collect();
@@ -730,7 +731,7 @@ impl<C: openxr_data::Compositor> Input<C> {
         action_sets: &HashMap<String, xr::ActionSet>,
         actions: &mut LoadedActionDataMap,
         bindings: Vec<DefaultBindings>,
-        legacy_actions: &super::LegacyActions,
+        legacy_actions: &LegacyActions,
     ) {
         let mut it: Box<dyn Iterator<Item = DefaultBindings>> = Box::new(bindings.into_iter());
         while let Some(DefaultBindings {
@@ -808,7 +809,7 @@ impl<C: openxr_data::Compositor> Input<C> {
         &self,
         action_sets: &HashMap<String, xr::ActionSet>,
         actions: &mut LoadedActionDataMap,
-        legacy_actions: &super::LegacyActions,
+        legacy_actions: &LegacyActions,
         bindings: &HashMap<String, ActionSetBinding>,
     ) {
         info!("loading bindings for {}", P::PROFILE_PATH);
@@ -821,7 +822,7 @@ impl<C: openxr_data::Compositor> Input<C> {
             f
         }
         let stp = constrain(|s| self.openxr.instance.string_to_path(s).unwrap());
-        let legacy_bindings = P::legacy_bindings(stp, legacy_actions);
+        let legacy_bindings = P::legacy_bindings(stp);
         let profile_path = stp(P::PROFILE_PATH);
         let legal_paths = P::legal_paths();
         let translate_map = P::TRANSLATE_MAP;
@@ -898,7 +899,7 @@ impl<C: openxr_data::Compositor> Input<C> {
                     Skeleton { .. } | Pose { .. } => unreachable!(),
                 }
             })
-            .chain(legacy_bindings)
+            .chain(legacy_bindings.binding_iter(legacy_actions))
             .collect();
 
         self.openxr
@@ -1543,11 +1544,19 @@ pub(super) trait InteractionProfile {
     const TRANSLATE_MAP: &'static [PathTranslation];
 
     fn legal_paths() -> Box<[String]>;
-    fn legacy_bindings(
-        string_to_path: impl for<'a> Fn(&'a str) -> xr::Path,
-        actions: &super::LegacyActions,
-    ) -> Vec<xr::Binding>;
+    fn legacy_bindings(string_to_path: impl StringToPath) -> LegacyBindings;
 }
+
+pub(super) trait StringToPath: for<'a> Fn(&'a str) -> xr::Path {
+    #[inline]
+    fn leftright(&self, path: &'static str) -> Vec<xr::Path> {
+        vec![
+            self(&format!("/user/hand/left/{path}")),
+            self(&format!("/user/hand/right/{path}")),
+        ]
+    }
+}
+impl<F> StringToPath for F where F: for<'a> Fn(&'a str) -> xr::Path {}
 
 pub(super) trait ForEachProfile {
     fn call<T: InteractionProfile>(&mut self);

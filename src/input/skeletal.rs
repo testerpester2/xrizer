@@ -35,7 +35,7 @@ impl<C: openxr_data::Compositor> Input<C> {
             Hand::Left => &legacy.left_spaces,
             Hand::Right => &legacy.right_spaces,
         }
-        .try_get_or_init_raw(session_data, legacy, display_time) else {
+        .try_get_or_init_raw(session_data, &legacy.actions, display_time) else {
             self.get_estimated_bones(session_data, space, hand, transforms);
             return;
         };
@@ -153,13 +153,14 @@ impl<C: openxr_data::Compositor> Input<C> {
         hand: Hand,
         transforms: &mut [vr::VRBoneTransform_t],
     ) {
-        let legacy = session_data.input_data.legacy_actions.get().unwrap();
         let path = match hand {
             Hand::Left => self.openxr.left_hand.subaction_path,
             Hand::Right => self.openxr.right_hand.subaction_path,
         };
-        let trigger_state = legacy.trigger.state(&session_data.session, path).unwrap();
-        let squeeze_state = legacy.squeeze.state(&session_data.session, path).unwrap();
+        let legacy = session_data.input_data.legacy_actions.get().unwrap();
+        let actions = &legacy.actions;
+        let trigger_state = actions.trigger.state(&session_data.session, path).unwrap();
+        let squeeze_state = actions.squeeze.state(&session_data.session, path).unwrap();
         let (bind, squeeze, open) = match hand {
             Hand::Left => (
                 &gen::left_hand::BINDPOSE,

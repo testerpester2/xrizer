@@ -1,5 +1,6 @@
 mod action_manifest;
 mod custom_bindings;
+mod legacy;
 mod skeletal;
 
 mod knuckles;
@@ -15,6 +16,7 @@ use crate::{
 };
 use action_manifest::InteractionProfile;
 use custom_bindings::{BoolActionData, FloatActionData};
+use legacy::{LegacyActionData, LegacyActions};
 use log::{debug, info, trace, warn};
 use openvr::{self as vr, space_relation_to_openvr_pose};
 use openxr as xr;
@@ -46,6 +48,7 @@ pub struct Input<C: openxr_data::Compositor> {
     set_map: RwLock<SlotMap<ActionSetKey, String>>,
     loaded_actions_path: OnceLock<PathBuf>,
     cached_poses: Mutex<CachedSpaces>,
+    legacy_packet_num: AtomicU32,
 }
 
 impl<C: openxr_data::Compositor> Input<C> {
@@ -63,6 +66,7 @@ impl<C: openxr_data::Compositor> Input<C> {
             left_hand_key,
             right_hand_key,
             cached_poses: Mutex::default(),
+            legacy_packet_num: 0.into(),
         }
     }
 
@@ -82,7 +86,7 @@ impl<C: openxr_data::Compositor> Input<C> {
 #[derive(Default)]
 pub struct InputSessionData {
     loaded_actions: OnceLock<RwLock<LoadedActions>>,
-    legacy_actions: OnceLock<LegacyActions>,
+    legacy_actions: OnceLock<LegacyActionData>,
 }
 
 impl InputSessionData {
@@ -469,6 +473,7 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
         unsafe {
             std::ptr::addr_of_mut!((*action_data).bActive).write(
                 legacy
+                    .actions
                     .grip_pose
                     .is_active(&data.session, xr::Path::NULL)
                     .unwrap(),
@@ -773,7 +778,7 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
 
             let legacy = data.input_data.legacy_actions.get().unwrap();
             sync_sets.push(xr::ActiveActionSet::new(&legacy.set));
-            legacy.packet_num.fetch_add(1, Ordering::Relaxed);
+            self.legacy_packet_num.fetch_add(1, Ordering::Relaxed);
         }
 
         {
@@ -990,10 +995,11 @@ impl<C: openxr_data::Compositor> Input<C> {
         }
 
         let data = self.openxr.session_data.get();
-        let Some(actions) = data.input_data.legacy_actions.get() else {
+        let Some(legacy) = data.input_data.legacy_actions.get() else {
             debug!("tried getting controller state, but legacy actions aren't ready");
             return false;
         };
+        let actions = &legacy.actions;
 
         let Ok(hand) = Hand::try_from(device_index) else {
             debug!("requested controller state for invalid device index: {device_index}");
@@ -1015,7 +1021,7 @@ impl<C: openxr_data::Compositor> Input<C> {
         let state = unsafe { state.as_mut() }.unwrap();
         *state = Default::default();
 
-        state.unPacketNum = actions.packet_num.load(Ordering::Relaxed);
+        state.unPacketNum = self.legacy_packet_num.load(Ordering::Relaxed);
 
         let mut read_button = |id, action: &xr::Action<bool>| {
             let val = action
@@ -1054,7 +1060,7 @@ impl<C: openxr_data::Compositor> Input<C> {
                     .sync_actions(&[xr::ActiveActionSet::new(&actions.set)])
                     .unwrap();
 
-                actions.packet_num.fetch_add(1, Ordering::Relaxed);
+                self.legacy_packet_num.fetch_add(1, Ordering::Relaxed);
             }
             None => {
                 // If we haven't created our legacy actions yet but we're getting our per frame
@@ -1076,7 +1082,7 @@ impl<C: openxr_data::Compositor> Input<C> {
                     );
                     return;
                 }
-                let legacy = LegacyActions::new(
+                let legacy = LegacyActionData::new(
                     &self.openxr.instance,
                     &data.session,
                     self.openxr.left_hand.subaction_path,
@@ -1190,20 +1196,21 @@ impl CachedSpaces {
             return Some(*pose);
         }
 
-        let actions = session_data.input_data.legacy_actions.get()?;
+        let legacy = session_data.input_data.legacy_actions.get()?;
         let spaces = match hand {
-            Hand::Left => &actions.left_spaces,
-            Hand::Right => &actions.right_spaces,
+            Hand::Left => &legacy.left_spaces,
+            Hand::Right => &legacy.right_spaces,
         };
 
-        let (loc, velo) =
-            if let Some(raw) = spaces.try_get_or_init_raw(session_data, actions, display_time) {
-                raw.relate(session_data.get_space_for_origin(origin), display_time)
-                    .unwrap()
-            } else {
-                trace!("failed to get raw space, making empty pose");
-                (xr::SpaceLocation::default(), xr::SpaceVelocity::default())
-            };
+        let (loc, velo) = if let Some(raw) =
+            spaces.try_get_or_init_raw(session_data, &legacy.actions, display_time)
+        {
+            raw.relate(session_data.get_space_for_origin(origin), display_time)
+                .unwrap()
+        } else {
+            trace!("failed to get raw space, making empty pose");
+            (xr::SpaceLocation::default(), xr::SpaceVelocity::default())
+        };
 
         let ret = space_relation_to_openvr_pose(loc, velo);
         Some(*pose.insert(ret))
@@ -1213,10 +1220,11 @@ impl CachedSpaces {
 fn setup_legacy_bindings(
     instance: &xr::Instance,
     session: &xr::Session<xr::vulkan::Vulkan>,
-    actions: &LegacyActions,
+    legacy: &LegacyActionData,
 ) {
     debug!("setting up legacy bindings");
 
+    let actions = &legacy.actions;
     action_manifest::for_each_profile! {<'a>(
         instance: &'a xr::Instance,
         actions: &'a LegacyActions
@@ -1227,16 +1235,16 @@ fn setup_legacy_bindings(
             f
         }
         let stp = constrain(|s| instance.string_to_path(s).unwrap());
-        let bindings = P::legacy_bindings(stp, actions);
+        let bindings = P::legacy_bindings(stp);
         let profile = stp(P::PROFILE_PATH);
         instance
-            .suggest_interaction_profile_bindings(profile, &bindings)
+            .suggest_interaction_profile_bindings(profile, &bindings.binding_iter(actions).collect::<Vec<_>>())
             .unwrap();
     }}
 
-    session.attach_action_sets(&[&actions.set]).unwrap();
+    session.attach_action_sets(&[&legacy.set]).unwrap();
     session
-        .sync_actions(&[xr::ActiveActionSet::new(&actions.set)])
+        .sync_actions(&[xr::ActiveActionSet::new(&legacy.set)])
         .unwrap();
 }
 
@@ -1254,129 +1262,5 @@ impl LoadedActions {
         self.actions
             .get(key)
             .ok_or(vr::EVRInputError::InvalidHandle)
-    }
-}
-
-struct HandSpaces {
-    hand_path: xr::Path,
-    grip: xr::Space,
-    aim: xr::Space,
-
-    /// Based on the controller jsons in SteamVR, the "raw" pose
-    /// (which seems to be equivalent to the pose returned by WaitGetPoses)
-    /// is actually the grip pose, but in the same position as the aim pose.
-    /// Using this pose instead of the grip fixes strange controller rotation in
-    /// I Expect You To Die 3.
-    /// This is stored as a space so we can locate hand joints relative to it for skeletal data.
-    raw: OnceLock<xr::Space>,
-}
-
-impl HandSpaces {
-    fn try_get_or_init_raw(
-        &self,
-        data: &SessionData,
-        actions: &LegacyActions,
-        time: xr::Time,
-    ) -> Option<&xr::Space> {
-        if let Some(raw) = self.raw.get() {
-            return Some(raw);
-        }
-
-        // This offset between grip and aim poses should be static,
-        // so it should be fine to only grab it once.
-        let aim_loc = self.aim.locate(&self.grip, time).unwrap();
-        if !aim_loc.location_flags.contains(
-            xr::SpaceLocationFlags::POSITION_VALID | xr::SpaceLocationFlags::ORIENTATION_VALID,
-        ) {
-            trace!("couldn't locate aim pose, no raw space will be created");
-            return None;
-        }
-
-        self.raw
-            .set(
-                actions
-                    .grip_pose
-                    .create_space(
-                        &data.session,
-                        self.hand_path,
-                        xr::Posef {
-                            orientation: xr::Quaternionf::IDENTITY,
-                            position: aim_loc.pose.position,
-                        },
-                    )
-                    .unwrap(),
-            )
-            .unwrap_or_else(|_| unreachable!());
-
-        self.raw.get()
-    }
-}
-
-struct LegacyActions {
-    set: xr::ActionSet,
-    grip_pose: xr::Action<xr::Posef>,
-    aim_pose: xr::Action<xr::Posef>,
-    app_menu: xr::Action<bool>,
-    trigger_click: xr::Action<bool>,
-    trigger: xr::Action<f32>,
-    squeeze: xr::Action<f32>,
-    packet_num: AtomicU32,
-    left_spaces: HandSpaces,
-    right_spaces: HandSpaces,
-}
-
-impl LegacyActions {
-    fn new<'a>(
-        instance: &'a xr::Instance,
-        session: &'a xr::Session<xr::vulkan::Vulkan>,
-        left_hand: xr::Path,
-        right_hand: xr::Path,
-    ) -> Self {
-        debug!("creating legacy actions");
-        let leftright = [left_hand, right_hand];
-        let set = instance
-            .create_action_set("xrizer-legacy-set", "XRizer Legacy Set", 0)
-            .unwrap();
-        let grip_pose = set
-            .create_action("grip-pose", "Grip Pose", &leftright)
-            .unwrap();
-        let aim_pose = set
-            .create_action("aim-pose", "Aim Pose", &leftright)
-            .unwrap();
-        let trigger_click = set
-            .create_action("trigger-click", "Trigger Click", &leftright)
-            .unwrap();
-        let trigger = set.create_action("trigger", "Trigger", &leftright).unwrap();
-        let squeeze = set.create_action("squeeze", "Squeeze", &leftright).unwrap();
-        let app_menu = set
-            .create_action("app-menu", "Application Menu", &leftright)
-            .unwrap();
-
-        let create_spaces = |hand| HandSpaces {
-            hand_path: hand,
-            grip: grip_pose
-                .create_space(session, hand, xr::Posef::IDENTITY)
-                .unwrap(),
-            aim: aim_pose
-                .create_space(session, hand, xr::Posef::IDENTITY)
-                .unwrap(),
-            raw: OnceLock::new(),
-        };
-
-        let left_spaces = create_spaces(left_hand);
-        let right_spaces = create_spaces(right_hand);
-
-        Self {
-            set,
-            grip_pose,
-            aim_pose,
-            app_menu,
-            trigger_click,
-            trigger,
-            squeeze,
-            packet_num: 0.into(),
-            left_spaces,
-            right_spaces,
-        }
     }
 }

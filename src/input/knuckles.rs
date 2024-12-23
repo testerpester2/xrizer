@@ -1,5 +1,8 @@
-use super::{action_manifest::PathTranslation, InteractionProfile};
-use openxr as xr;
+use super::{
+    action_manifest::{PathTranslation, StringToPath},
+    legacy::LegacyBindings,
+    InteractionProfile,
+};
 
 pub struct Knuckles;
 
@@ -67,40 +70,23 @@ impl InteractionProfile for Knuckles {
             .collect()
     }
 
-    fn legacy_bindings(
-        string_to_path: impl for<'a> Fn(&'a str) -> openxr::Path,
-        actions: &super::LegacyActions,
-    ) -> Vec<openxr::Binding> {
-        let stp = string_to_path;
-        let mut bindings = Vec::new();
-
-        macro_rules! add_binding {
-            ($action:expr, $suffix:literal) => {
-                bindings.push(xr::Binding::new(
-                    $action,
-                    stp(concat!("/user/hand/left/", $suffix)),
-                ));
-                bindings.push(xr::Binding::new(
-                    $action,
-                    stp(concat!("/user/hand/right/", $suffix)),
-                ));
-            };
+    fn legacy_bindings(stp: impl StringToPath) -> LegacyBindings {
+        LegacyBindings {
+            grip_pose: stp.leftright("input/grip/pose"),
+            aim_pose: stp.leftright("input/aim/pose"),
+            app_menu: stp.leftright("input/b/click"),
+            trigger: stp.leftright("input/trigger/click"),
+            trigger_click: stp.leftright("input/trigger/value"),
+            squeeze: stp.leftright("input/squeeze/value"),
         }
-
-        add_binding!(&actions.grip_pose, "input/grip/pose");
-        add_binding!(&actions.aim_pose, "input/aim/pose");
-        add_binding!(&actions.app_menu, "input/b/click");
-        add_binding!(&actions.trigger, "input/trigger/value");
-        add_binding!(&actions.trigger_click, "input/trigger/click");
-
-        bindings
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{xr, InteractionProfile, Knuckles};
+    use super::{InteractionProfile, Knuckles};
     use crate::input::{tests::Fixture, ActionData};
+    use openxr as xr;
 
     #[test]
     fn verify_bindings() {

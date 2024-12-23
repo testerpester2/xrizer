@@ -332,6 +332,7 @@ fn legacy_input() {
                 .legacy_actions
                 .get()
                 .unwrap()
+                .actions
                 .trigger_click
                 .as_raw(),
             fakexr::ActionState::Bool(true),
