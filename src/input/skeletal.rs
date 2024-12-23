@@ -23,6 +23,12 @@ impl<C: openxr_data::Compositor> Input<C> {
     ) {
         use HandSkeletonBone::*;
 
+        // TODO: this stuff does not work correctly for model space right now (Alyx)
+        if space == vr::EVRSkeletalTransformSpace::Model {
+            self.get_estimated_bones(session_data, space, hand, transforms);
+            return;
+        }
+
         let legacy = session_data.input_data.legacy_actions.get().unwrap();
         let display_time = self.openxr.display_time.get();
         let Some(raw) = match hand {
