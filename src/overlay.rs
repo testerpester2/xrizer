@@ -1,5 +1,5 @@
 use crate::{
-    compositor::Compositor,
+    compositor::{is_usable_swapchain, Compositor},
     openxr_data::{OpenXrData, SessionData},
     vulkan::VulkanData,
 };
@@ -48,7 +48,7 @@ impl OverlayMan {
                 continue;
             };
 
-            let swapchain = swapchains.get(key).unwrap();
+            let SwapchainData { swapchain, .. } = swapchains.get(key).unwrap();
             let space = session.get_space_for_origin(
                 overlay
                     .transform
@@ -57,6 +57,7 @@ impl OverlayMan {
                     .unwrap_or(session.current_origin),
             );
 
+            trace!("overlay rect: {:#?}", data.rect);
             let layer = xr::CompositionLayerQuad::new()
                 .space(space)
                 .layer_flags(xr::CompositionLayerFlags::BLEND_TEXTURE_SOURCE_ALPHA)
@@ -105,9 +106,14 @@ new_key_type!(
     struct OverlayKey;
 );
 
+struct SwapchainData {
+    swapchain: xr::Swapchain<xr::Vulkan>,
+    info: xr::SwapchainCreateInfo<xr::Vulkan>,
+}
+
 #[derive(Default)]
 pub struct OverlaySessionData {
-    swapchains: Mutex<SecondaryMap<OverlayKey, xr::Swapchain<xr::Vulkan>>>,
+    swapchains: Mutex<SecondaryMap<OverlayKey, SwapchainData>>,
 }
 
 struct Overlay {
@@ -163,15 +169,13 @@ impl Overlay {
             .get_or_insert_with(|| VulkanData::new(&texture_data));
 
         let mut swapchains = session_data.overlay_data.swapchains.lock().unwrap();
-        let swapchain = swapchains.entry(key).unwrap().or_insert_with(|| {
-            let swapchain = session_data
-                .session
-                .create_swapchain(&VulkanData::get_swapchain_create_info(
-                    &texture_data,
-                    self.bounds,
-                    texture.eColorSpace,
-                ))
-                .unwrap();
+        let mut create_swapchain = || {
+            let info = VulkanData::get_swapchain_create_info(
+                &texture_data,
+                self.bounds,
+                texture.eColorSpace,
+            );
+            let swapchain = session_data.session.create_swapchain(&info).unwrap();
 
             let imgs = swapchain
                 .enumerate_images()
@@ -180,9 +184,26 @@ impl Overlay {
                 .map(vk::Image::from_raw)
                 .collect();
             data.post_swapchain_create(imgs);
-            swapchain
-        });
+            SwapchainData { swapchain, info }
+        };
 
+        let swapchain = {
+            let data = swapchains
+                .entry(key)
+                .unwrap()
+                .or_insert_with(&mut create_swapchain);
+            if !is_usable_swapchain(
+                &data.info,
+                &VulkanData::get_swapchain_create_info(
+                    &texture_data,
+                    self.bounds,
+                    texture.eColorSpace,
+                ),
+            ) {
+                *data = create_swapchain();
+            }
+            &mut data.swapchain
+        };
         let idx = swapchain.acquire_image().unwrap();
         swapchain.wait_image(xr::Duration::INFINITE).unwrap();
 

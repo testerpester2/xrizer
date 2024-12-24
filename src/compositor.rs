@@ -555,10 +555,8 @@ impl vr::IVRCompositor028_Interface for Compositor {
         ctrl.eyes_submitted[eye as usize] = if ctrl.should_render {
             // Make sure our image dimensions haven't changed.
             let mut last_info = self.swapchain_create_info.lock().unwrap();
-            if !ctrl
-                .backend
-                .is_usable_swapchain(&last_info, texture, bounds)
-            {
+            let new_info = ctrl.backend.get_swapchain_create_info(texture, bounds);
+            if !is_usable_swapchain(&last_info, &new_info) {
                 info!("recreating swapchain (for {eye:?})");
                 *last_info = ctrl.backend.get_swapchain_create_info(texture, bounds);
                 let FrameController {
@@ -825,21 +823,6 @@ impl GraphicsApi {
         }
     }
 
-    fn is_usable_swapchain(
-        &self,
-        create_info: &xr::SwapchainCreateInfo<xr::vulkan::Vulkan>,
-        texture: &vr::Texture_t,
-        bounds: vr::VRTextureBounds_t,
-    ) -> bool {
-        let new_info = self.get_swapchain_create_info(texture, bounds);
-
-        create_info.format == new_info.format
-            && create_info.width == new_info.width
-            && create_info.height == new_info.height
-            && create_info.array_size == new_info.array_size
-            && create_info.sample_count == new_info.sample_count
-    }
-
     fn post_swapchain_create(&mut self, images: Vec<vk::Image>) {
         match self {
             Self::Vulkan(vk) => vk.post_swapchain_create(images),
@@ -871,6 +854,17 @@ impl GraphicsApi {
             Self::Fake(_) => xr::Extent2Di::default(),
         }
     }
+}
+
+pub fn is_usable_swapchain(
+    current: &xr::SwapchainCreateInfo<xr::Vulkan>,
+    new: &xr::SwapchainCreateInfo<xr::Vulkan>,
+) -> bool {
+    current.format == new.format
+        && current.width >= new.width
+        && current.height >= new.height
+        && current.array_size == new.array_size
+        && current.sample_count == new.sample_count
 }
 
 #[cfg(test)]
@@ -1059,10 +1053,21 @@ mod tests {
         let f = Fixture::new();
         fakexr::should_render_next_frame(f.comp.openxr.instance.as_raw(), true);
 
+        let get_swapchain_width = || f.comp.swapchain_create_info.lock().unwrap().width;
         assert_eq!(f.wait_get_poses(), None);
         assert_eq!(f.submit(vr::EVREye::Left), None);
+
+        let old_width = get_swapchain_width();
         WIDTH.set(40);
         assert_eq!(f.submit(vr::EVREye::Right), None);
+        let new_width = get_swapchain_width();
+        assert_ne!(old_width, new_width);
+
+        assert_eq!(f.wait_get_poses(), None);
+        WIDTH.set(20);
+        assert_eq!(f.submit(vr::EVREye::Left), None);
+        let newer_width = get_swapchain_width();
+        assert_eq!(newer_width, new_width);
     }
 
     #[test]
