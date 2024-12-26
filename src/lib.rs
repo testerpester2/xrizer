@@ -12,6 +12,9 @@ mod screenshots;
 mod system;
 mod vulkan;
 
+#[cfg(not(test))]
+mod error_dialog;
+
 use clientcore::ClientCore;
 use openvr as vr;
 use std::ffi::{c_char, c_void, CStr};
@@ -149,6 +152,7 @@ fn init_logging() {
                 log::error!("{info}");
                 let backtrace = std::backtrace::Backtrace::force_capture();
                 log::error!("Backtrace: \n{backtrace}");
+                error_dialog::dialog(format!("{info}"), backtrace);
                 std::process::abort();
             }));
         }

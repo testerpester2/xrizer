@@ -37,7 +37,10 @@ serde_json = "1.0.127"
 slotmap = { workspace = true }
 time = { version = "0.3.36", features = ["formatting", "local-offset", "macros"] }
 tracy-client = { workspace = true, features = ["only-localhost", "demangle"], optional = true }
-
+egui = "0.28.1"
+egui-miniquad = "0.15.0"
+miniquad = "=0.4.0"
+webbrowser = "0.5.5"
 [build-dependencies]
 shaders = { path = "shaders" }
 
