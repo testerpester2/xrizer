@@ -7,23 +7,31 @@ use std::ffi::CStr;
 pub struct SimpleController;
 
 impl InteractionProfile for SimpleController {
-    const OPENVR_CONTROLLER_TYPE: &'static CStr = c"generic"; // meaningless really
-    const MODEL: &'static CStr = c"<unknown>";
-    const PROFILE_PATH: &'static str = "/interaction_profiles/khr/simple_controller";
-    const TRANSLATE_MAP: &'static [PathTranslation] = &[
-        PathTranslation {
-            from: "trigger",
-            to: "select",
-            stop: true,
-        },
-        PathTranslation {
-            from: "application_menu",
-            to: "menu",
-            stop: true,
-        },
-    ];
+    fn openvr_controller_type(&self) -> &'static CStr {
+        c"generic" // meaningless really
+    }
+    fn model(&self) -> &'static CStr {
+        c"<unknown>"
+    }
+    fn profile_path(&self) -> &'static str {
+        "/interaction_profiles/khr/simple_controller"
+    }
+    fn translate_map(&self) -> &'static [PathTranslation] {
+        &[
+            PathTranslation {
+                from: "trigger",
+                to: "select",
+                stop: true,
+            },
+            PathTranslation {
+                from: "application_menu",
+                to: "menu",
+                stop: true,
+            },
+        ]
+    }
 
-    fn legacy_bindings(stp: impl StringToPath) -> LegacyBindings {
+    fn legacy_bindings(&self, stp: &dyn StringToPath) -> LegacyBindings {
         LegacyBindings {
             grip_pose: stp.leftright("input/grip/pose"),
             aim_pose: stp.leftright("input/aim/pose"),
@@ -34,7 +42,7 @@ impl InteractionProfile for SimpleController {
         }
     }
 
-    fn legal_paths() -> Box<[String]> {
+    fn legal_paths(&self) -> Box<[String]> {
         [
             "input/select/click",
             "input/menu/click",

@@ -11,9 +11,9 @@ use crate::{
     openxr_data::{self, Hand, OpenXrData, SessionData},
     tracy_span, AtomicF32,
 };
-use action_manifest::InteractionProfile;
+use action_manifest::{InteractionProfile, Profiles};
 use custom_bindings::{BoolActionData, FloatActionData};
-use legacy::{LegacyActionData, LegacyActions};
+use legacy::LegacyActionData;
 use log::{debug, info, trace, warn};
 use openvr::{self as vr, space_relation_to_openvr_pose};
 use openxr as xr;
@@ -1107,21 +1107,18 @@ impl<C: openxr_data::Compositor> Input<C> {
         let get_profile_data = || {
             let map = PROFILE_MAP.get_or_init(|| {
                 let instance = &self.openxr.instance;
-                let mut map = HashMap::new();
-                let out = &mut map;
-                action_manifest::for_each_profile! {<'a>(
-                    instance: &'a xr::Instance,
-                    out: &'a mut HashMap<xr::Path, ProfileData>
-                ) {
-                    out.insert(
-                        instance.string_to_path(P::PROFILE_PATH).unwrap(),
-                        ProfileData {
-                            controller_type: P::OPENVR_CONTROLLER_TYPE,
-                            model_number: P::MODEL,
-                        }
-                    );
-                }}
-                map
+                Profiles::get()
+                    .profiles()
+                    .map(|profile| {
+                        (
+                            instance.string_to_path(profile.profile_path()).unwrap(),
+                            ProfileData {
+                                controller_type: profile.openvr_controller_type(),
+                                model_number: profile.model(),
+                            },
+                        )
+                    })
+                    .collect()
             });
             let hand = match hand {
                 Hand::Left => &self.openxr.left_hand,
@@ -1222,22 +1219,23 @@ fn setup_legacy_bindings(
     debug!("setting up legacy bindings");
 
     let actions = &legacy.actions;
-    action_manifest::for_each_profile! {<'a>(
-        instance: &'a xr::Instance,
-        actions: &'a LegacyActions
-    ) {
+    for profile in Profiles::get().profiles() {
         const fn constrain<F>(f: F) -> F
-            where F: for<'a> Fn(&'a str) -> xr::Path
+        where
+            F: for<'a> Fn(&'a str) -> xr::Path,
         {
             f
         }
         let stp = constrain(|s| instance.string_to_path(s).unwrap());
-        let bindings = P::legacy_bindings(stp);
-        let profile = stp(P::PROFILE_PATH);
+        let bindings = profile.legacy_bindings(&stp);
+        let profile = stp(profile.profile_path());
         instance
-            .suggest_interaction_profile_bindings(profile, &bindings.binding_iter(actions).collect::<Vec<_>>())
+            .suggest_interaction_profile_bindings(
+                profile,
+                &bindings.binding_iter(actions).collect::<Vec<_>>(),
+            )
             .unwrap();
-    }}
+    }
 
     session.attach_action_sets(&[&legacy.set]).unwrap();
     session

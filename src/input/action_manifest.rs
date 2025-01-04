@@ -165,7 +165,7 @@ struct DefaultBindings {
 
 #[derive(Deserialize, Debug, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum ControllerType {
+pub(super) enum ControllerType {
     ViveController,
     Knuckles,
     OculusTouch,
@@ -697,34 +697,6 @@ struct Vector2Input {
     touch: Option<ActionBindingOutput>,
 }
 
-/// Call a generic function with each supported interaction profile.
-/// The profile is provided as a type parameter named P.
-macro_rules! for_each_profile {
-    (<
-        $($lifetimes:lifetime),*
-        $(,$generic_name:ident $(: $generic_bound:path)?)*
-    > ($($arg_name:ident: $arg_ty:ty),*) $block:block) => {{
-        struct S<$($lifetimes,)* $($generic_name $(: $generic_bound)?),*> {
-            $(
-                $arg_name: $arg_ty
-            ),*
-        }
-
-        impl<$($lifetimes,)* $($generic_name $(: $generic_bound)?),*> crate::input::action_manifest::ForEachProfile
-            for S<$($lifetimes,)* $($generic_name),*> {
-            fn call<P: InteractionProfile>(&mut self) {
-                let S {
-                    $($arg_name),*
-                } = self;
-                $block
-            }
-        }
-
-        crate::input::action_manifest::for_each_profile_fn(S { $($arg_name),* });
-    }};
-}
-pub(super) use for_each_profile;
-
 impl<C: openxr_data::Compositor> Input<C> {
     fn load_bindings(
         &self,
@@ -759,39 +731,26 @@ impl<C: openxr_data::Compositor> Input<C> {
 
                 Some(bindings)
             };
-            macro_rules! load_bindings {
-                ($ty:ty) => {
-                    if let Some(bindings) = load_bindings() {
-                        self.load_bindings_for_profile::<$ty>(
-                            action_sets,
-                            actions,
-                            legacy_actions,
-                            &bindings,
-                        )
-                    }
-                };
-            }
             match controller_type {
-                ControllerType::ViveController => {
-                    if let Some(bindings) = load_bindings() {
-                        self.load_bindings_for_profile::<ViveWands>(
-                            action_sets,
-                            actions,
-                            legacy_actions,
-                            &bindings,
-                        );
-                        self.load_bindings_for_profile::<SimpleController>(
-                            action_sets,
-                            actions,
-                            legacy_actions,
-                            &bindings,
-                        );
-                    }
-                }
-                ControllerType::Knuckles => load_bindings!(Knuckles),
-                ControllerType::OculusTouch => load_bindings!(Touch),
                 ControllerType::Unknown(ref other) => {
                     info!("Ignoring bindings for unknown profile {other}")
+                }
+                ref other => {
+                    let profiles = Profiles::get()
+                        .iter()
+                        .filter_map(|(ty, p)| (*ty == *other).then_some(*p));
+                    let bindings = LazyCell::new(load_bindings);
+                    for profile in profiles {
+                        if let Some(bindings) = bindings.as_ref() {
+                            self.load_bindings_for_profile(
+                                profile,
+                                action_sets,
+                                actions,
+                                legacy_actions,
+                                bindings,
+                            );
+                        }
+                    }
                 }
             }
 
@@ -806,14 +765,15 @@ impl<C: openxr_data::Compositor> Input<C> {
         }
     }
 
-    fn load_bindings_for_profile<P: InteractionProfile>(
+    fn load_bindings_for_profile(
         &self,
+        profile: &dyn InteractionProfile,
         action_sets: &HashMap<String, xr::ActionSet>,
         actions: &mut LoadedActionDataMap,
         legacy_actions: &LegacyActions,
         bindings: &HashMap<String, ActionSetBinding>,
     ) {
-        info!("loading bindings for {}", P::PROFILE_PATH);
+        info!("loading bindings for {}", profile.profile_path());
 
         // Workaround weird closure lifetime quirks.
         const fn constrain<F>(f: F) -> F
@@ -823,10 +783,10 @@ impl<C: openxr_data::Compositor> Input<C> {
             f
         }
         let stp = constrain(|s| self.openxr.instance.string_to_path(s).unwrap());
-        let legacy_bindings = P::legacy_bindings(stp);
-        let profile_path = stp(P::PROFILE_PATH);
-        let legal_paths = P::legal_paths();
-        let translate_map = P::TRANSLATE_MAP;
+        let legacy_bindings = profile.legacy_bindings(&stp);
+        let profile_path = stp(profile.profile_path());
+        let legal_paths = profile.legal_paths();
+        let translate_map = profile.translate_map();
         let path_translator = |path: &str| {
             let mut translated = path.to_string();
             for PathTranslation { from, to, stop } in translate_map {
@@ -910,7 +870,7 @@ impl<C: openxr_data::Compositor> Input<C> {
         debug!(
             "suggested {} bindings for {}",
             bindings.len(),
-            P::PROFILE_PATH
+            profile.profile_path()
         );
     }
 }
@@ -1534,18 +1494,42 @@ pub(super) struct PathTranslation {
     pub stop: bool,
 }
 
-pub(super) trait InteractionProfile {
-    const PROFILE_PATH: &'static str;
+pub(super) trait InteractionProfile: Sync + Send {
+    fn profile_path(&self) -> &'static str;
     /// Corresponds to Prop_ModelNumber_String
     /// Can be pulled from a SteamVR System Report
-    const MODEL: &'static CStr;
+    fn model(&self) -> &'static CStr;
     /// Corresponds to Prop_ControllerType_String
     /// Can be pulled from a SteamVR System Report
-    const OPENVR_CONTROLLER_TYPE: &'static CStr;
-    const TRANSLATE_MAP: &'static [PathTranslation];
+    fn openvr_controller_type(&self) -> &'static CStr;
+    fn translate_map(&self) -> &'static [PathTranslation];
 
-    fn legal_paths() -> Box<[String]>;
-    fn legacy_bindings(string_to_path: impl StringToPath) -> LegacyBindings;
+    fn legal_paths(&self) -> Box<[String]>;
+    fn legacy_bindings(&self, string_to_path: &dyn StringToPath) -> LegacyBindings;
+}
+
+type ProfileList = &'static [(ControllerType, &'static dyn InteractionProfile)];
+pub(super) struct Profiles(ProfileList);
+impl std::ops::Deref for Profiles {
+    type Target = ProfileList;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl Profiles {
+    pub fn get() -> &'static Self {
+        static P: Profiles = Profiles(&[
+            (ControllerType::ViveController, &ViveWands),
+            (ControllerType::Knuckles, &Knuckles),
+            (ControllerType::OculusTouch, &Touch),
+            (ControllerType::ViveController, &SimpleController),
+        ]);
+        &P
+    }
+
+    pub fn profiles(&self) -> impl Iterator<Item = &'static dyn InteractionProfile> {
+        self.0.iter().map(|(_, p)| *p)
+    }
 }
 
 pub(super) trait StringToPath: for<'a> Fn(&'a str) -> xr::Path {
@@ -1558,15 +1542,3 @@ pub(super) trait StringToPath: for<'a> Fn(&'a str) -> xr::Path {
     }
 }
 impl<F> StringToPath for F where F: for<'a> Fn(&'a str) -> xr::Path {}
-
-pub(super) trait ForEachProfile {
-    fn call<T: InteractionProfile>(&mut self);
-}
-
-/// Add all supported interaction profiles here.
-pub(super) fn for_each_profile_fn<F: ForEachProfile>(mut f: F) {
-    f.call::<ViveWands>();
-    f.call::<Knuckles>();
-    f.call::<SimpleController>();
-    f.call::<Touch>();
-}

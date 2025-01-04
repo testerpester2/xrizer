@@ -263,14 +263,14 @@ impl Fixture {
         }
     }
 
-    fn set_interaction_profile<T: InteractionProfile>(&self, hand: fakexr::UserPath) {
+    fn set_interaction_profile(&self, profile: &dyn InteractionProfile, hand: fakexr::UserPath) {
         fakexr::set_interaction_profile(
             self.raw_session(),
             hand,
             self.input
                 .openxr
                 .instance
-                .string_to_path(T::PROFILE_PATH)
+                .string_to_path(profile.profile_path())
                 .unwrap(),
         );
         self.input.openxr.poll_events();
@@ -510,7 +510,7 @@ fn raw_pose_is_grip_at_aim() {
     let pose_handle = f.get_action_handle(c"/actions/set1/in/pose");
     let left_hand = f.get_input_source_handle(c"/user/hand/left");
     f.load_actions(c"actions.json");
-    f.set_interaction_profile::<Knuckles>(LeftHand);
+    f.set_interaction_profile(&Knuckles, LeftHand);
 
     let grip_rot = Quat::from_rotation_x(-FRAC_PI_4);
     let grip = xr::Posef {
@@ -566,7 +566,7 @@ fn raw_pose_waitgetposes_and_skeletal_pose_identical() {
     let pose_handle = f.get_action_handle(c"/actions/set1/in/pose");
     let skel_handle = f.get_action_handle(c"/actions/set1/in/skellyl");
     f.load_actions(c"actions.json");
-    f.set_interaction_profile::<Knuckles>(LeftHand);
+    f.set_interaction_profile(&Knuckles, LeftHand);
     let rot = Quat::from_rotation_x(-FRAC_PI_4);
     let pose = xr::Posef {
         position: xr::Vector3f {
@@ -685,8 +685,8 @@ fn pose_action_no_restrict() {
     let poser = f.get_action_handle(c"/actions/set1/in/poser");
 
     f.load_actions(c"actions.json");
-    f.set_interaction_profile::<ViveWands>(LeftHand);
-    f.set_interaction_profile::<ViveWands>(RightHand);
+    f.set_interaction_profile(&ViveWands, LeftHand);
+    f.set_interaction_profile(&ViveWands, RightHand);
     let session = f.input.openxr.session_data.get().session.as_raw();
     let pose_left = xr::Posef {
         position: xr::Vector3f {
@@ -728,7 +728,7 @@ fn cased_actions() {
     let set1 = f.get_action_set_handle(c"/actions/set1");
     f.load_actions(c"actions_cased.json");
 
-    let path = ViveWands::PROFILE_PATH;
+    let path = ViveWands.profile_path();
     f.verify_bindings::<bool>(
         path,
         c"/actions/set1/in/BoolAct",
@@ -750,7 +750,7 @@ fn cased_actions() {
         ["/user/hand/left/output/haptic".into()],
     );
 
-    f.set_interaction_profile::<ViveWands>(LeftHand);
+    f.set_interaction_profile(&ViveWands, LeftHand);
     let session = f.input.openxr.session_data.get().session.as_raw();
     fakexr::set_grip(session, LeftHand, xr::Posef::IDENTITY);
     fakexr::set_aim(session, LeftHand, xr::Posef::IDENTITY);

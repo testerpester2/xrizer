@@ -7,43 +7,51 @@ use std::ffi::CStr;
 pub struct Touch;
 
 impl InteractionProfile for Touch {
-    const OPENVR_CONTROLLER_TYPE: &'static CStr = c"oculus_touch";
-    const MODEL: &'static CStr = c"Miramar";
-    const PROFILE_PATH: &'static str = "/interaction_profiles/oculus/touch_controller";
-    const TRANSLATE_MAP: &'static [PathTranslation] = &[
-        PathTranslation {
-            from: "trigger/click",
-            to: "trigger/value",
-            stop: true,
-        },
-        PathTranslation {
-            from: "grip/click",
-            to: "squeeze/value",
-            stop: true,
-        },
-        PathTranslation {
-            from: "trigger/pull",
-            to: "trigger/value",
-            stop: true,
-        },
-        PathTranslation {
-            from: "trigger/click",
-            to: "trigger/value",
-            stop: true,
-        },
-        PathTranslation {
-            from: "application_menu",
-            to: "menu",
-            stop: true,
-        },
-        PathTranslation {
-            from: "joystick",
-            to: "thumbstick",
-            stop: true,
-        },
-    ];
+    fn openvr_controller_type(&self) -> &'static CStr {
+        c"oculus_touch"
+    }
+    fn model(&self) -> &'static CStr {
+        c"Miramar"
+    }
+    fn profile_path(&self) -> &'static str {
+        "/interaction_profiles/oculus/touch_controller"
+    }
+    fn translate_map(&self) -> &'static [PathTranslation] {
+        &[
+            PathTranslation {
+                from: "trigger/click",
+                to: "trigger/value",
+                stop: true,
+            },
+            PathTranslation {
+                from: "grip/click",
+                to: "squeeze/value",
+                stop: true,
+            },
+            PathTranslation {
+                from: "trigger/pull",
+                to: "trigger/value",
+                stop: true,
+            },
+            PathTranslation {
+                from: "trigger/click",
+                to: "trigger/value",
+                stop: true,
+            },
+            PathTranslation {
+                from: "application_menu",
+                to: "menu",
+                stop: true,
+            },
+            PathTranslation {
+                from: "joystick",
+                to: "thumbstick",
+                stop: true,
+            },
+        ]
+    }
 
-    fn legacy_bindings(stp: impl StringToPath) -> LegacyBindings {
+    fn legacy_bindings(&self, stp: &dyn StringToPath) -> LegacyBindings {
         LegacyBindings {
             grip_pose: stp.leftright("input/grip/pose"),
             aim_pose: stp.leftright("input/aim/pose"),
@@ -54,7 +62,7 @@ impl InteractionProfile for Touch {
         }
     }
 
-    fn legal_paths() -> Box<[String]> {
+    fn legal_paths(&self) -> Box<[String]> {
         let left_only = [
             "input/x/click",
             "input/x/touch",
@@ -110,7 +118,7 @@ mod tests {
         let f = Fixture::new();
         f.load_actions(c"actions.json");
 
-        let path = Touch::PROFILE_PATH;
+        let path = Touch.profile_path();
         f.verify_bindings::<bool>(
             path,
             c"/actions/set1/in/boolact",

@@ -7,33 +7,41 @@ use std::ffi::CStr;
 pub struct ViveWands;
 
 impl InteractionProfile for ViveWands {
-    const OPENVR_CONTROLLER_TYPE: &'static CStr = c"vive_controller";
-    const MODEL: &'static CStr = c"Vive. Controller MV";
-    const PROFILE_PATH: &'static str = "/interaction_profiles/htc/vive_controller";
-    const TRANSLATE_MAP: &'static [PathTranslation] = &[
-        PathTranslation {
-            from: "grip",
-            to: "squeeze",
-            stop: true,
-        },
-        PathTranslation {
-            from: "trigger/pull",
-            to: "trigger/value",
-            stop: true,
-        },
-        PathTranslation {
-            from: "trigger/click",
-            to: "trigger/value",
-            stop: true,
-        },
-        PathTranslation {
-            from: "application_menu",
-            to: "menu",
-            stop: true,
-        },
-    ];
+    fn openvr_controller_type(&self) -> &'static CStr {
+        c"vive_controller"
+    }
+    fn model(&self) -> &'static CStr {
+        c"Vive. Controller MV"
+    }
+    fn profile_path(&self) -> &'static str {
+        "/interaction_profiles/htc/vive_controller"
+    }
+    fn translate_map(&self) -> &'static [PathTranslation] {
+        &[
+            PathTranslation {
+                from: "grip",
+                to: "squeeze",
+                stop: true,
+            },
+            PathTranslation {
+                from: "trigger/pull",
+                to: "trigger/value",
+                stop: true,
+            },
+            PathTranslation {
+                from: "trigger/click",
+                to: "trigger/value",
+                stop: true,
+            },
+            PathTranslation {
+                from: "application_menu",
+                to: "menu",
+                stop: true,
+            },
+        ]
+    }
 
-    fn legal_paths() -> Box<[String]> {
+    fn legal_paths(&self) -> Box<[String]> {
         [
             "input/squeeze/click",
             "input/menu/click",
@@ -58,7 +66,7 @@ impl InteractionProfile for ViveWands {
         .collect()
     }
 
-    fn legacy_bindings(stp: impl StringToPath) -> LegacyBindings {
+    fn legacy_bindings(&self, stp: &dyn StringToPath) -> LegacyBindings {
         LegacyBindings {
             grip_pose: stp.leftright("input/grip/pose"),
             aim_pose: stp.leftright("input/aim/pose"),
@@ -79,9 +87,10 @@ mod tests {
     #[test]
     fn verify_bindings() {
         let f = Fixture::new();
+        let path = ViveWands.profile_path();
         f.load_actions(c"actions.json");
         f.verify_bindings::<bool>(
-            ViveWands::PROFILE_PATH,
+            path,
             c"/actions/set1/in/boolact",
             [
                 "/user/hand/left/input/squeeze/click".into(),
@@ -97,7 +106,7 @@ mod tests {
         );
 
         f.verify_bindings::<f32>(
-            ViveWands::PROFILE_PATH,
+            path,
             c"/actions/set1/in/vec1act",
             [
                 "/user/hand/left/input/trigger/value".into(),
@@ -107,7 +116,7 @@ mod tests {
         );
 
         f.verify_bindings::<xr::Vector2f>(
-            ViveWands::PROFILE_PATH,
+            path,
             c"/actions/set1/in/vec2act",
             [
                 "/user/hand/left/input/trackpad".into(),
@@ -116,7 +125,7 @@ mod tests {
         );
 
         f.verify_bindings::<xr::Haptic>(
-            ViveWands::PROFILE_PATH,
+            path,
             c"/actions/set1/in/vib",
             [
                 "/user/hand/left/output/haptic".into(),

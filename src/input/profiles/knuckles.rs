@@ -7,38 +7,46 @@ use crate::input::{
 pub struct Knuckles;
 
 impl InteractionProfile for Knuckles {
-    const PROFILE_PATH: &'static str = "/interaction_profiles/valve/index_controller";
-    const MODEL: &'static std::ffi::CStr = c"Knuckles";
-    const OPENVR_CONTROLLER_TYPE: &'static std::ffi::CStr = c"knuckles";
-    const TRANSLATE_MAP: &'static [PathTranslation] = &[
-        PathTranslation {
-            from: "pull",
-            to: "value",
-            stop: false,
-        },
-        PathTranslation {
-            from: "input/grip",
-            to: "input/squeeze",
-            stop: false,
-        },
-        PathTranslation {
-            from: "squeeze/click",
-            to: "squeeze/force",
-            stop: true,
-        },
-        PathTranslation {
-            from: "squeeze/grab",
-            to: "squeeze/force",
-            stop: true,
-        },
-        PathTranslation {
-            from: "trackpad/click",
-            to: "trackpad/force",
-            stop: true,
-        },
-    ];
+    fn profile_path(&self) -> &'static str {
+        "/interaction_profiles/valve/index_controller"
+    }
+    fn model(&self) -> &'static std::ffi::CStr {
+        c"Knuckles"
+    }
+    fn openvr_controller_type(&self) -> &'static std::ffi::CStr {
+        c"knuckles"
+    }
+    fn translate_map(&self) -> &'static [PathTranslation] {
+        &[
+            PathTranslation {
+                from: "pull",
+                to: "value",
+                stop: false,
+            },
+            PathTranslation {
+                from: "input/grip",
+                to: "input/squeeze",
+                stop: false,
+            },
+            PathTranslation {
+                from: "squeeze/click",
+                to: "squeeze/force",
+                stop: true,
+            },
+            PathTranslation {
+                from: "squeeze/grab",
+                to: "squeeze/force",
+                stop: true,
+            },
+            PathTranslation {
+                from: "trackpad/click",
+                to: "trackpad/force",
+                stop: true,
+            },
+        ]
+    }
 
-    fn legal_paths() -> Box<[String]> {
+    fn legal_paths(&self) -> Box<[String]> {
         let click_and_touch = ["input/a", "input/b", "input/trigger", "input/thumbstick"]
             .iter()
             .flat_map(|p| [format!("{p}/click"), format!("{p}/touch")]);
@@ -70,7 +78,7 @@ impl InteractionProfile for Knuckles {
             .collect()
     }
 
-    fn legacy_bindings(stp: impl StringToPath) -> LegacyBindings {
+    fn legacy_bindings(&self, stp: &dyn StringToPath) -> LegacyBindings {
         LegacyBindings {
             grip_pose: stp.leftright("input/grip/pose"),
             aim_pose: stp.leftright("input/aim/pose"),
@@ -93,7 +101,7 @@ mod tests {
         let f = Fixture::new();
         f.load_actions(c"actions.json");
 
-        let path = Knuckles::PROFILE_PATH;
+        let path = Knuckles.profile_path();
         f.verify_bindings::<bool>(
             path,
             c"/actions/set1/in/boolact",
