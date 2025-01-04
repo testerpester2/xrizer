@@ -65,7 +65,7 @@ jobs:
 
   build:
     needs: [ubuntu-build, check-should-build-container]
-    if: ${{ needs.ubuntu-build.result == 'success' || needs.ubuntu-build.result == 'skipped' }}
+    if: ${{ always() && (needs.ubuntu-build.result == 'success' || needs.ubuntu-build.result == 'skipped') }}
     runs-on: ubuntu-latest
     container:
       image: ${{ needs.check-should-build-container.outputs.container-path }}-ubuntu:latest
