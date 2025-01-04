@@ -2,11 +2,8 @@ use super::{
     custom_bindings::{
         BoolActionData, DpadData, DpadDirection, FloatActionData, GrabBindingData, ToggleData,
     },
-    legacy::{LegacyActionData, LegacyActions, LegacyBindings},
-    profiles::{
-        knuckles::Knuckles, oculus_touch::Touch, simple_controller::SimpleController,
-        vive_controller::ViveWands,
-    },
+    legacy::{LegacyActionData, LegacyActions},
+    profiles::{InteractionProfile, PathTranslation, Profiles},
     BoundPoseType, Input,
 };
 use crate::openxr_data::{self, Hand, SessionData};
@@ -20,7 +17,6 @@ use serde::{
 use slotmap::SecondaryMap;
 use std::cell::{LazyCell, RefCell};
 use std::collections::HashMap;
-use std::ffi::CStr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::RwLock;
@@ -737,6 +733,7 @@ impl<C: openxr_data::Compositor> Input<C> {
                 }
                 ref other => {
                     let profiles = Profiles::get()
+                        .list
                         .iter()
                         .filter_map(|(ty, p)| (*ty == *other).then_some(*p));
                     let bindings = LazyCell::new(load_bindings);
@@ -1487,58 +1484,3 @@ fn handle_pose_bindings(
         trace!("bound {:?} to pose {output} for hand {hand:?}", *pose_ty);
     }
 }
-
-pub(super) struct PathTranslation {
-    pub from: &'static str,
-    pub to: &'static str,
-    pub stop: bool,
-}
-
-pub(super) trait InteractionProfile: Sync + Send {
-    fn profile_path(&self) -> &'static str;
-    /// Corresponds to Prop_ModelNumber_String
-    /// Can be pulled from a SteamVR System Report
-    fn model(&self) -> &'static CStr;
-    /// Corresponds to Prop_ControllerType_String
-    /// Can be pulled from a SteamVR System Report
-    fn openvr_controller_type(&self) -> &'static CStr;
-    fn translate_map(&self) -> &'static [PathTranslation];
-
-    fn legal_paths(&self) -> Box<[String]>;
-    fn legacy_bindings(&self, string_to_path: &dyn StringToPath) -> LegacyBindings;
-}
-
-type ProfileList = &'static [(ControllerType, &'static dyn InteractionProfile)];
-pub(super) struct Profiles(ProfileList);
-impl std::ops::Deref for Profiles {
-    type Target = ProfileList;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-impl Profiles {
-    pub fn get() -> &'static Self {
-        static P: Profiles = Profiles(&[
-            (ControllerType::ViveController, &ViveWands),
-            (ControllerType::Knuckles, &Knuckles),
-            (ControllerType::OculusTouch, &Touch),
-            (ControllerType::ViveController, &SimpleController),
-        ]);
-        &P
-    }
-
-    pub fn profiles(&self) -> impl Iterator<Item = &'static dyn InteractionProfile> {
-        self.0.iter().map(|(_, p)| *p)
-    }
-}
-
-pub(super) trait StringToPath: for<'a> Fn(&'a str) -> xr::Path {
-    #[inline]
-    fn leftright(&self, path: &'static str) -> Vec<xr::Path> {
-        vec![
-            self(&format!("/user/hand/left/{path}")),
-            self(&format!("/user/hand/right/{path}")),
-        ]
-    }
-}
-impl<F> StringToPath for F where F: for<'a> Fn(&'a str) -> xr::Path {}

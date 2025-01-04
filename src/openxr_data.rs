@@ -1,5 +1,6 @@
 use crate::{
     clientcore::{Injected, Injector},
+    input::{InteractionProfile, Profiles},
     vulkan::VulkanData,
 };
 use glam::f32::{Quat, Vec3};
@@ -9,7 +10,7 @@ use openxr as xr;
 use std::mem::ManuallyDrop;
 use std::sync::{
     atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
-    RwLock,
+    Mutex, RwLock,
 };
 
 pub trait Compositor: vr::InterfaceImpl {
@@ -141,7 +142,7 @@ impl<C: Compositor> OpenXrData<C> {
                             .current_interaction_profile(info.subaction_path)
                             .unwrap();
 
-                        info.interaction_profile.store(profile_path);
+                        info.profile_path.store(profile_path);
                         let profile = match profile_path {
                             xr::Path::NULL => {
                                 info.connected.store(false, Ordering::Relaxed);
@@ -152,6 +153,8 @@ impl<C: Compositor> OpenXrData<C> {
                                 self.instance.path_to_string(path).unwrap()
                             }
                         };
+
+                        *info.profile.lock().unwrap() = Profiles::get().profile_from_name(&profile);
 
                         info!(
                             "{} interaction profile changed: {}",
@@ -475,7 +478,8 @@ pub struct HandInfo {
     path_name: &'static str,
     connected: AtomicBool,
     pub subaction_path: xr::Path,
-    pub interaction_profile: AtomicPath,
+    pub profile_path: AtomicPath,
+    pub profile: Mutex<Option<&'static dyn InteractionProfile>>,
 }
 
 impl HandInfo {
@@ -489,7 +493,8 @@ impl HandInfo {
             path_name,
             connected: false.into(),
             subaction_path: instance.string_to_path(path_name).unwrap(),
-            interaction_profile: AtomicPath(0.into()),
+            profile_path: AtomicPath(0.into()),
+            profile: Mutex::default(),
         }
     }
 }

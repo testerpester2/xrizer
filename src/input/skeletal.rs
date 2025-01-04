@@ -2,7 +2,7 @@
 mod gen;
 
 use super::Input;
-use crate::openxr_data::{self, Hand, SessionData};
+use crate::openxr_data::{self, Hand, OpenXrData, SessionData};
 use glam::{Affine3A, Quat, Vec3};
 use openvr as vr;
 use openxr as xr;
@@ -15,6 +15,7 @@ impl<C: openxr_data::Compositor> Input<C> {
     /// Returns false if hand tracking data couldn't be generated for some reason.
     pub(super) fn get_bones_from_hand_tracking(
         &self,
+        xr_data: &OpenXrData<C>,
         session_data: &SessionData,
         space: vr::EVRSkeletalTransformSpace,
         hand_tracker: &xr::HandTracker,
@@ -35,7 +36,7 @@ impl<C: openxr_data::Compositor> Input<C> {
             Hand::Left => &legacy.left_spaces,
             Hand::Right => &legacy.right_spaces,
         }
-        .try_get_or_init_raw(session_data, &legacy.actions, display_time) else {
+        .try_get_or_init_raw(xr_data, session_data, &legacy.actions, display_time) else {
             self.get_estimated_bones(session_data, space, hand, transforms);
             return;
         };

@@ -7,11 +7,12 @@ mod skeletal;
 #[cfg(test)]
 mod tests;
 
+pub use profiles::{InteractionProfile, Profiles};
+
 use crate::{
     openxr_data::{self, Hand, OpenXrData, SessionData},
     tracy_span, AtomicF32,
 };
-use action_manifest::{InteractionProfile, Profiles};
 use custom_bindings::{BoolActionData, FloatActionData};
 use legacy::LegacyActionData;
 use log::{debug, info, trace, warn};
@@ -373,6 +374,7 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
         };
         if let Some(hand_tracker) = hand_tracker.as_ref() {
             self.get_bones_from_hand_tracking(
+                &self.openxr,
                 &session_data,
                 transform_space,
                 hand_tracker,
@@ -523,11 +525,11 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
                 let (mut hand, interaction_profile) = match subaction_path {
                     x if x == self.openxr.left_hand.subaction_path => (
                         Some(Hand::Left),
-                        Some(self.openxr.left_hand.interaction_profile.load()),
+                        Some(self.openxr.left_hand.profile_path.load()),
                     ),
                     x if x == self.openxr.right_hand.subaction_path => (
                         Some(Hand::Right),
-                        Some(self.openxr.right_hand.interaction_profile.load()),
+                        Some(self.openxr.right_hand.profile_path.load()),
                     ),
                     x if x == xr::Path::NULL => (None, None),
                     _ => unreachable!(),
@@ -535,10 +537,8 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
 
                 let get_first_bound_hand_profile = || {
                     bindings
-                        .get(&self.openxr.left_hand.interaction_profile.load())
-                        .or_else(|| {
-                            bindings.get(&self.openxr.right_hand.interaction_profile.load())
-                        })
+                        .get(&self.openxr.left_hand.profile_path.load())
+                        .or_else(|| bindings.get(&self.openxr.right_hand.profile_path.load()))
                 };
 
                 let Some(bound) = interaction_profile
@@ -970,6 +970,7 @@ impl<C: openxr_data::Compositor> Input<C> {
         let mut spaces = self.cached_poses.lock().unwrap();
         let data = self.openxr.session_data.get();
         spaces.get_pose_impl(
+            &self.openxr,
             &data,
             self.openxr.display_time.get(),
             hand,
@@ -1108,7 +1109,7 @@ impl<C: openxr_data::Compositor> Input<C> {
             let map = PROFILE_MAP.get_or_init(|| {
                 let instance = &self.openxr.instance;
                 Profiles::get()
-                    .profiles()
+                    .profiles_iter()
                     .map(|profile| {
                         (
                             instance.string_to_path(profile.profile_path()).unwrap(),
@@ -1124,7 +1125,7 @@ impl<C: openxr_data::Compositor> Input<C> {
                 Hand::Left => &self.openxr.left_hand,
                 Hand::Right => &self.openxr.right_hand,
             };
-            let profile = hand.interaction_profile.load();
+            let profile = hand.profile_path.load();
             map.get(&profile)
         };
 
@@ -1169,6 +1170,7 @@ struct CachedPoses {
 impl CachedSpaces {
     fn get_pose_impl(
         &mut self,
+        xr_data: &OpenXrData<impl openxr_data::Compositor>,
         session_data: &SessionData,
         display_time: xr::Time,
         hand: Hand,
@@ -1197,7 +1199,7 @@ impl CachedSpaces {
         };
 
         let (loc, velo) = if let Some(raw) =
-            spaces.try_get_or_init_raw(session_data, &legacy.actions, display_time)
+            spaces.try_get_or_init_raw(xr_data, session_data, &legacy.actions, display_time)
         {
             raw.relate(session_data.get_space_for_origin(origin), display_time)
                 .unwrap()
@@ -1219,7 +1221,7 @@ fn setup_legacy_bindings(
     debug!("setting up legacy bindings");
 
     let actions = &legacy.actions;
-    for profile in Profiles::get().profiles() {
+    for profile in Profiles::get().profiles_iter() {
         const fn constrain<F>(f: F) -> F
         where
             F: for<'a> Fn(&'a str) -> xr::Path,

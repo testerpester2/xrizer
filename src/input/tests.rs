@@ -215,7 +215,7 @@ impl Fixture {
         T::get_xr_action(action).expect("Couldn't get OpenXR handle for action")
     }
 
-    fn get_pose(
+    pub fn get_pose(
         &self,
         handle: vr::VRActionHandle_t,
         restrict: vr::VRInputValueHandle_t,
@@ -263,7 +263,11 @@ impl Fixture {
         }
     }
 
-    fn set_interaction_profile(&self, profile: &dyn InteractionProfile, hand: fakexr::UserPath) {
+    pub fn set_interaction_profile(
+        &self,
+        profile: &dyn InteractionProfile,
+        hand: fakexr::UserPath,
+    ) {
         fakexr::set_interaction_profile(
             self.raw_session(),
             hand,
@@ -276,7 +280,7 @@ impl Fixture {
         self.input.openxr.poll_events();
     }
 
-    fn raw_session(&self) -> xr::sys::Session {
+    pub fn raw_session(&self) -> xr::sys::Session {
         self.input.openxr.session_data.get().session.as_raw()
     }
 }
@@ -485,7 +489,7 @@ fn reload_manifest_on_session_restart() {
 }
 
 #[track_caller]
-fn compare_pose(expected: xr::Posef, actual: xr::Posef) {
+pub fn compare_pose(expected: xr::Posef, actual: xr::Posef) {
     let epos = expected.position;
     let apos = actual.position;
     assert!(
@@ -500,62 +504,6 @@ fn compare_pose(expected: xr::Posef, actual: xr::Posef) {
     assert!(
         arot.x == erot.x && arot.y == erot.y && arot.z == erot.z && arot.w == erot.w,
         "expected orientation: {erot:?}\nactual orientation: {arot:?}",
-    );
-}
-
-#[test]
-fn raw_pose_is_grip_at_aim() {
-    let f = Fixture::new();
-
-    let pose_handle = f.get_action_handle(c"/actions/set1/in/pose");
-    let left_hand = f.get_input_source_handle(c"/user/hand/left");
-    f.load_actions(c"actions.json");
-    f.set_interaction_profile(&Knuckles, LeftHand);
-
-    let grip_rot = Quat::from_rotation_x(-FRAC_PI_4);
-    let grip = xr::Posef {
-        position: xr::Vector3f {
-            x: 0.5,
-            y: 0.5,
-            z: 0.5,
-        },
-        orientation: xr::Quaternionf {
-            x: grip_rot.x,
-            y: grip_rot.y,
-            z: grip_rot.z,
-            w: grip_rot.w,
-        },
-    };
-
-    fakexr::set_grip(f.raw_session(), LeftHand, grip);
-
-    let aim = xr::Posef {
-        position: xr::Vector3f {
-            x: 0.7,
-            y: 0.6,
-            z: 1.0,
-        },
-        orientation: xr::Quaternionf::IDENTITY,
-    };
-
-    fakexr::set_aim(f.raw_session(), LeftHand, aim);
-
-    let data = f.get_pose(pose_handle, left_hand).unwrap();
-
-    assert!(data.bActive);
-    assert_eq!(data.activeOrigin, left_hand);
-
-    let pose = data.pose;
-    assert!(pose.bDeviceIsConnected);
-    assert!(pose.bPoseIsValid);
-    assert_eq!(pose.eTrackingResult, vr::ETrackingResult::Running_OK);
-
-    compare_pose(
-        xr::Posef {
-            position: aim.position,
-            orientation: grip.orientation,
-        },
-        pose.mDeviceToAbsoluteTracking.into(),
     );
 }
 

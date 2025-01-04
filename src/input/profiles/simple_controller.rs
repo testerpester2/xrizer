@@ -1,7 +1,5 @@
-use crate::input::{
-    action_manifest::{InteractionProfile, PathTranslation, StringToPath},
-    legacy::LegacyBindings,
-};
+use super::{InteractionProfile, PathTranslation, StringToPath};
+use crate::input::legacy::LegacyBindings;
 use std::ffi::CStr;
 
 pub struct SimpleController;
