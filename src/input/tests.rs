@@ -33,7 +33,7 @@ impl std::fmt::Debug for ActionData {
     }
 }
 
-pub(super) struct FakeCompositor(crate::vulkan::VulkanData);
+pub(super) struct FakeCompositor(crate::graphics_backends::VulkanData);
 impl openvr::InterfaceImpl for FakeCompositor {
     fn get_version(_: &CStr) -> Option<Box<dyn FnOnce(&Arc<Self>) -> *mut std::ffi::c_void>> {
         None
@@ -90,10 +90,9 @@ impl Fixture {
     pub fn new() -> Self {
         crate::init_logging();
         let xr = Arc::new(OpenXrData::new(&crate::clientcore::Injector::default()).unwrap());
-        let comp = Arc::new(FakeCompositor(crate::vulkan::VulkanData::new_temporary(
-            &xr.instance,
-            xr.system_id,
-        )));
+        let comp = Arc::new(FakeCompositor(
+            crate::graphics_backends::VulkanData::new_temporary(&xr.instance, xr.system_id),
+        ));
         xr.compositor.set(Arc::downgrade(&comp));
         let ret = Self {
             input: Input::new(xr.clone()).into(),

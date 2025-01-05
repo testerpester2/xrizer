@@ -1,7 +1,7 @@
 use crate::{
     clientcore::{Injected, Injector},
+    graphics_backends::VulkanData,
     input::{InteractionProfile, Profiles},
-    vulkan::VulkanData,
 };
 use glam::f32::{Quat, Vec3};
 use log::info;

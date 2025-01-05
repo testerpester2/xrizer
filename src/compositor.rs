@@ -1,13 +1,13 @@
 use crate::{
     clientcore::{Injected, Injector},
+    graphics_backends::VulkanData,
     input::Input,
     openxr_data::{self, OpenXrData, SessionData},
     overlay::OverlayMan,
     system::System,
-    tracy_span,
-    vulkan::VulkanData,
-    AtomicF64,
+    tracy_span, AtomicF64,
 };
+
 use ash::vk::{self, Handle};
 use log::{debug, info, trace};
 use openvr as vr;

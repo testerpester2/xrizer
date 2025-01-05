@@ -10,7 +10,7 @@ mod overlayview;
 mod rendermodels;
 mod screenshots;
 mod system;
-mod vulkan;
+mod graphics_backends;
 
 #[cfg(not(test))]
 mod error_dialog;

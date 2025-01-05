@@ -1,7 +1,7 @@
 use crate::{
     compositor::{is_usable_swapchain, Compositor},
+    graphics_backends::VulkanData,
     openxr_data::{OpenXrData, SessionData},
-    vulkan::VulkanData,
 };
 use ash::vk::{self, Handle};
 use log::{debug, trace};
