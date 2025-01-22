@@ -238,7 +238,7 @@ pub extern "system" fn get_instance_proc_addr(
                 CreateReferenceSpace,
                 PollEvent,
                 DestroySpace,
-                (LocateViews),
+                LocateViews,
                 RequestExitSession,
                 (ResultToString),
                 (StructureTypeToString),
@@ -426,6 +426,7 @@ struct Session {
     left_hand: HandData,
     right_hand: HandData,
     spaces: Mutex<HashSet<DefaultKey>>,
+    frame_active: AtomicBool,
 }
 
 impl Drop for Session {
@@ -573,11 +574,16 @@ struct ActionStateData {
     changed: bool,
 }
 
+struct Swapchain {
+    image_acquired: AtomicBool,
+}
+
 impl_handle!(Instance, xr::Instance);
 impl_handle!(Session, xr::Session);
 impl_handle!(ActionSet, xr::ActionSet);
 impl_handle!(Action, xr::Action);
 impl_handle!(Space, xr::Space);
+impl_handle!(Swapchain, xr::Swapchain);
 
 fn destroy_handle<T: XrType>(xr: T) -> xr::Result {
     T::Handle::instances().remove(DefaultKey::from(KeyData::from_ffi(T::TO_RAW(xr))));
@@ -642,6 +648,7 @@ extern "system" fn create_session(
         left_hand: Default::default(),
         right_hand: Default::default(),
         spaces: Default::default(),
+        frame_active: false.into(),
     });
 
     let tx = sess.event_sender.clone();
@@ -1292,14 +1299,24 @@ extern "system" fn locate_space(
 }
 extern "system" fn create_swapchain(
     _session: xr::Session,
-    _info: *const xr::SwapchainCreateInfo,
-    _swapchain: *mut xr::Swapchain,
+    info: *const xr::SwapchainCreateInfo,
+    swapchain: *mut xr::Swapchain,
 ) -> xr::Result {
+    let info = unsafe { info.as_ref() }.unwrap();
+    if info.width == 0 || info.height == 0 {
+        return xr::Result::ERROR_VALIDATION_FAILURE;
+    }
+    let swap = Arc::new(Swapchain {
+        image_acquired: false.into(),
+    });
+    unsafe {
+        swapchain.write(swap.to_xr());
+    }
     xr::Result::SUCCESS
 }
 
-extern "system" fn destroy_swapchain(_: xr::Swapchain) -> xr::Result {
-    xr::Result::SUCCESS
+extern "system" fn destroy_swapchain(swapchain: xr::Swapchain) -> xr::Result {
+    destroy_handle(swapchain)
 }
 
 extern "system" fn enumerate_swapchain_images(
@@ -1315,24 +1332,35 @@ extern "system" fn enumerate_swapchain_images(
 }
 
 extern "system" fn acquire_swapchain_image(
-    _swapchain: xr::Swapchain,
+    swapchain: xr::Swapchain,
     _info: *const xr::SwapchainImageAcquireInfo,
     _index: *mut u32,
 ) -> xr::Result {
+    let swapchain = get_handle!(swapchain);
+    swapchain.image_acquired.store(true, Ordering::Relaxed);
     xr::Result::SUCCESS
 }
 
 extern "system" fn wait_swapchain_image(
-    _swapchain: xr::Swapchain,
+    swapchain: xr::Swapchain,
     _info: *const xr::SwapchainImageWaitInfo,
 ) -> xr::Result {
+    let swapchain = get_handle!(swapchain);
+    if !swapchain.image_acquired.load(Ordering::Relaxed) {
+        return xr::Result::ERROR_CALL_ORDER_INVALID;
+    }
     xr::Result::SUCCESS
 }
 
 extern "system" fn release_swapchain_image(
-    _swapchain: xr::Swapchain,
+    swapchain: xr::Swapchain,
     _info: *const xr::SwapchainImageReleaseInfo,
 ) -> xr::Result {
+    let swapchain = get_handle!(swapchain);
+    if !swapchain.image_acquired.load(Ordering::Relaxed) {
+        return xr::Result::ERROR_CALL_ORDER_INVALID;
+    }
+    swapchain.image_acquired.store(false, Ordering::Relaxed);
     xr::Result::SUCCESS
 }
 
@@ -1356,13 +1384,31 @@ extern "system" fn wait_frame(
 }
 
 extern "system" fn begin_frame(
-    _session: xr::Session,
+    session: xr::Session,
     _info: *const xr::FrameBeginInfo,
 ) -> xr::Result {
+    let session = get_handle!(session);
+    session.frame_active.store(true, Ordering::Relaxed);
     xr::Result::SUCCESS
 }
 
-extern "system" fn end_frame(_session: xr::Session, _info: *const xr::FrameEndInfo) -> xr::Result {
+extern "system" fn end_frame(session: xr::Session, _info: *const xr::FrameEndInfo) -> xr::Result {
+    let session = get_handle!(session);
+    if !session.frame_active.load(Ordering::Relaxed) {
+        return xr::Result::ERROR_CALL_ORDER_INVALID;
+    }
+    session.frame_active.store(false, Ordering::Relaxed);
+    xr::Result::SUCCESS
+}
+
+extern "system" fn locate_views(
+    _session: xr::Session,
+    _info: *const xr::ViewLocateInfo,
+    _state: *mut xr::ViewState,
+    _capacity: u32,
+    _output: *mut u32,
+    _views: *mut xr::View,
+) -> xr::Result {
     xr::Result::SUCCESS
 }
 

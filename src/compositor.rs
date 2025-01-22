@@ -43,7 +43,7 @@ struct FrameMetrics {
 
 struct TempBackendData<G: GraphicsBackend> {
     backend: G,
-    swapchain_create_info: xr::SwapchainCreateInfo<G::Api>,
+    swapchain_create_info: Option<xr::SwapchainCreateInfo<G::Api>>,
 }
 supported_backends_enum!(enum AnyTempBackendData: TempBackendData);
 
@@ -78,7 +78,7 @@ impl Compositor {
 
         #[macros::any_graphics(DynFrameController)]
         fn start_frame<G: GraphicsBackend + 'static>(ctrl: &mut FrameController<G>) -> xr::Time {
-            ctrl.start_frame()
+            ctrl.maybe_start_frame()
         }
 
         self.openxr
@@ -102,7 +102,7 @@ impl Compositor {
             let info = backend.swapchain_info_for_texture(b_texture, bounds, texture.eColorSpace);
             TempBackendData {
                 backend,
-                swapchain_create_info: info,
+                swapchain_create_info: Some(info),
             }
             .into()
         }
@@ -134,7 +134,7 @@ impl openxr_data::Compositor for Compositor {
                 {
                     TempBackendData {
                         backend: ctrl.backend,
-                        swapchain_create_info: ctrl.swapchain_data.info,
+                        swapchain_create_info: ctrl.swapchain_data.map(|d| d.info),
                     }
                     .into()
                 }
@@ -157,7 +157,7 @@ impl openxr_data::Compositor for Compositor {
         // This function is called while a write lock is called on the session, and as such should
         // not use self.openxr.session_data.get().
 
-        let backend = self
+        let backend_data = self
             .tmp_backend
             .lock()
             .unwrap()
@@ -188,7 +188,11 @@ impl openxr_data::Compositor for Compositor {
         }
 
         *session_data.comp_data.0.lock().unwrap() = Some(
-            backend.with_any_graphics_owned::<new_frame_controller>((session_data, waiter, stream)),
+            backend_data.with_any_graphics_owned::<new_frame_controller>((
+                session_data,
+                waiter,
+                stream,
+            )),
         );
 
         self.maybe_start_frame(session_data);
@@ -681,11 +685,12 @@ struct SwapchainData<G: xr::Graphics> {
 struct FrameController<G: GraphicsBackend> {
     stream: xr::FrameStream<G::Api>,
     waiter: xr::FrameWaiter,
-    swapchain_data: SwapchainData<G::Api>,
+    swapchain_data: Option<SwapchainData<G::Api>>,
     image_index: usize,
     image_acquired: bool,
     should_render: bool,
     eyes_submitted: [Option<SubmittedEye>; 2],
+    submitting_null: bool,
     backend: G,
 }
 supported_backends_enum!(enum DynFrameController: FrameController);
@@ -700,6 +705,12 @@ impl<G: GraphicsBackend> FrameController<G> {
         for<'a> &'a openxr_data::GraphicalSession:
             TryInto<&'a xr::Session<G::Api>, Error: std::fmt::Display>,
     {
+        assert!(
+            is_valid_swapchain_info(create_info),
+            "Recreating swapchain with invalid dimensions {}x{}",
+            create_info.width,
+            create_info.height
+        );
         let swapchain = session_data
             .create_swapchain(create_info)
             .unwrap_or_else(|err| {
@@ -728,24 +739,30 @@ impl<G: GraphicsBackend> FrameController<G> {
         waiter: xr::FrameWaiter,
         stream: xr::FrameStream<G::Api>,
         mut backend: G,
-        create_info: xr::SwapchainCreateInfo<G::Api>,
+        create_info: Option<xr::SwapchainCreateInfo<G::Api>>,
     ) -> Self
     where
         for<'a> &'a openxr_data::GraphicalSession:
             TryInto<&'a xr::Session<G::Api>, Error: std::fmt::Display>,
     {
-        let swapchain = Self::init_swapchain(session_data, &create_info, &mut backend);
+        let swapchain_data = if let Some(info) = create_info {
+            is_valid_swapchain_info(&info).then(|| {
+                let swapchain = Self::init_swapchain(session_data, &info, &mut backend);
+                SwapchainData { swapchain, info }
+            })
+        } else {
+            None
+        };
+
         Self {
             stream,
             waiter,
-            swapchain_data: SwapchainData {
-                swapchain,
-                info: create_info,
-            },
+            swapchain_data,
             image_index: 0,
             image_acquired: false,
             should_render: false,
             eyes_submitted: Default::default(),
+            submitting_null: false,
             backend,
         }
     }
@@ -760,38 +777,51 @@ impl<G: GraphicsBackend> FrameController<G> {
     {
         let swapchain = Self::init_swapchain(session_data, &create_info, &mut self.backend);
 
-        self.swapchain_data = SwapchainData {
+        self.swapchain_data = Some(SwapchainData {
             swapchain,
             info: create_info,
-        };
-        self.image_index = 0;
-        self.image_acquired = false;
-        self.should_render = false;
+        });
+        self.acquire_swapchain_image();
         self.eyes_submitted = Default::default();
     }
 
-    fn start_frame(&mut self) -> xr::Time {
-        if self.image_acquired {
-            tracy_span!("release old swapchain image");
-            self.swapchain_data.swapchain.release_image().unwrap();
-        }
-
-        self.image_index = self
+    fn acquire_swapchain_image(&mut self) {
+        let swapchain = &mut self
             .swapchain_data
-            .swapchain
+            .as_mut()
+            .expect("Can't acquire swapchain image with no swapchain!")
+            .swapchain;
+
+        self.image_index = swapchain
             .acquire_image()
             .expect("Failed to acquire swapchain image") as usize;
 
         trace!("waiting image");
         {
             tracy_span!("wait swapchain image");
-            self.swapchain_data
-                .swapchain
+            swapchain
                 .wait_image(xr::Duration::INFINITE)
                 .expect("Failed to wait for swapchain image");
         }
 
         self.image_acquired = true;
+    }
+
+    fn maybe_start_frame(&mut self) -> xr::Time {
+        if self.image_acquired {
+            tracy_span!("release old swapchain image");
+            self.swapchain_data
+                .as_mut()
+                .expect("Image is acquired, yet we have no swapchain?")
+                .swapchain
+                .release_image()
+                .unwrap();
+        }
+
+        if self.swapchain_data.is_some() {
+            self.acquire_swapchain_image();
+        }
+
         let frame_state = {
             tracy_span!("wait frame");
             self.waiter.wait().unwrap()
@@ -802,6 +832,7 @@ impl<G: GraphicsBackend> FrameController<G> {
             self.stream.begin().unwrap();
         }
         self.eyes_submitted = [None; 2];
+        self.submitting_null = false;
         trace!("frame begin");
 
         frame_state.predicted_display_time
@@ -836,37 +867,64 @@ impl<G: GraphicsBackend> FrameController<G> {
             let new_info = self
                 .backend
                 .swapchain_info_for_texture(texture, bounds, color_space);
-            let current_info = &self.swapchain_data.info;
-            if !is_usable_swapchain(current_info, &new_info) {
-                info!("recreating swapchain (for {eye:?})");
-                self.recreate_swapchain(session_data, new_info);
-            }
-            Some(SubmittedEye {
-                extent: self.backend.copy_texture_to_swapchain(
-                    eye,
-                    texture,
-                    bounds,
-                    self.image_index,
-                    submit_flags,
-                ),
-                flip_vertically: bounds.vertically_flipped(),
-            })
+
+            is_valid_swapchain_info(&new_info)
+                .then(|| {
+                    assert!(
+                        !self.submitting_null,
+                        "App submitted a null texture and a normal texture in the same frame"
+                    );
+                    let current_info = if let Some(data) = self.swapchain_data.as_ref() {
+                        &data.info
+                    } else {
+                        // SAFETY: Technically SessionCreateInfo should be Copy anyway so this should be fine:
+                        // https://github.com/Ralith/openxrs/issues/183
+                        self.recreate_swapchain(session_data, unsafe { std::ptr::read(&new_info) });
+                        self.swapchain_data.as_ref().map(|d| &d.info).unwrap()
+                    };
+                    if !is_usable_swapchain(current_info, &new_info) {
+                        info!("recreating swapchain (for {eye:?})");
+                        self.recreate_swapchain(session_data, new_info);
+                    }
+                    SubmittedEye {
+                        extent: self.backend.copy_texture_to_swapchain(
+                            eye,
+                            texture,
+                            bounds,
+                            self.image_index,
+                            submit_flags,
+                        ),
+                        flip_vertically: bounds.vertically_flipped(),
+                    }
+                })
+                .or_else(|| {
+                    self.submitting_null = true;
+                    Some(Default::default())
+                })
         } else {
             Some(Default::default())
+        };
+
+        // Swapchain data will be None when the swapchain info is bad
+        // This should only happen when the game submits a 0x0 texture,
+        // which is valid for whatever reason.
+        let Some(swapchain_data) = self.swapchain_data.as_mut() else {
+            return Err(vr::EVRCompositorError::None);
         };
 
         trace!("submitted {eye:?}");
         if !self.eyes_submitted.iter().all(|eye| eye.is_some()) {
             return Err(vr::EVRCompositorError::None);
         }
+
         // Both eyes submitted: show our images
 
         trace!("releasing image");
-        self.swapchain_data.swapchain.release_image().unwrap();
+        swapchain_data.swapchain.release_image().unwrap();
         self.image_acquired = false;
 
         let mut proj_layer_views = Vec::new();
-        if self.should_render {
+        if self.should_render && !self.submitting_null {
             let (flags, views) = session_data
                 .session
                 .locate_views(
@@ -903,7 +961,7 @@ impl<G: GraphicsBackend> FrameController<G> {
                     }
 
                     let sub_image = xr::SwapchainSubImage::new()
-                        .swapchain(&self.swapchain_data.swapchain)
+                        .swapchain(&swapchain_data.swapchain)
                         .image_array_index(eye_index as u32)
                         .image_rect(xr::Rect2Di {
                             extent,
@@ -959,6 +1017,10 @@ where
         && current.sample_count == new.sample_count
 }
 
+fn is_valid_swapchain_info<G: xr::Graphics>(info: &xr::SwapchainCreateInfo<G>) -> bool {
+    info.width > 0 && info.height > 0
+}
+
 #[cfg(test)]
 pub use tests::FakeGraphicsData;
 
@@ -974,7 +1036,8 @@ mod tests {
 
     pub struct FakeGraphicsData(Arc<VulkanData>);
     thread_local! {
-        static WIDTH: Cell<u32> = const { Cell::new(10) };
+        static SWAPCHAIN_WIDTH: Cell<u32> = const { Cell::new(10) };
+        static SWAPCHAIN_HEIGHT: Cell<u32> = const { Cell::new(10) };
     }
 
     pub enum FakeApi {}
@@ -1036,8 +1099,8 @@ mod tests {
                 usage_flags: xr::SwapchainUsageFlags::EMPTY,
                 format: 0,
                 sample_count: 1,
-                width: WIDTH.get(),
-                height: 10,
+                width: SWAPCHAIN_WIDTH.get(),
+                height: SWAPCHAIN_HEIGHT.get(),
                 face_count: 1,
                 array_size: 2,
                 mip_count: 1,
@@ -1103,6 +1166,7 @@ mod tests {
             let vk = Arc::new(VulkanData::new_temporary(&xr.instance, xr.system_id));
             let comp = Arc::new(Compositor::new(xr.clone(), &Injector::default()));
             xr.compositor.set(Arc::downgrade(&comp));
+            crate::init_logging();
 
             Self { comp, vk }
         }
@@ -1216,27 +1280,38 @@ mod tests {
         assert_eq!(f.wait_get_poses(), None);
     }
 
-    //#[test]
-    //fn recreate_swapchain() {
-    //    let f = Fixture::new();
-    //    fakexr::should_render_next_frame(f.comp.openxr.instance.as_raw(), true);
+    #[test]
+    fn recreate_swapchain() {
+        let f = Fixture::new();
+        fakexr::should_render_next_frame(f.comp.openxr.instance.as_raw(), true);
 
-    //    let get_swapchain_width = || f.comp.swapchain_create_info.lock().unwrap().width;
-    //    assert_eq!(f.wait_get_poses(), None);
-    //    assert_eq!(f.submit(vr::EVREye::Left), None);
+        let get_swapchain_width = || {
+            let data = f.comp.openxr.session_data.get();
+            let lock = data.comp_data.0.lock().unwrap();
+            let DynFrameController::Fake(ctrl) = lock.as_ref().unwrap() else {
+                panic!("Frame controller was not set up or not faked!");
+            };
+            ctrl.swapchain_data
+                .as_ref()
+                .expect("swapchain info missing")
+                .info
+                .width
+        };
+        assert_eq!(f.wait_get_poses(), None);
+        assert_eq!(f.submit(vr::EVREye::Left), None);
 
-    //    let old_width = get_swapchain_width();
-    //    WIDTH.set(40);
-    //    assert_eq!(f.submit(vr::EVREye::Right), None);
-    //    let new_width = get_swapchain_width();
-    //    assert_ne!(old_width, new_width);
+        let old_width = get_swapchain_width();
+        SWAPCHAIN_WIDTH.set(40);
+        assert_eq!(f.submit(vr::EVREye::Right), None);
+        let new_width = get_swapchain_width();
+        assert_ne!(old_width, new_width);
 
-    //    assert_eq!(f.wait_get_poses(), None);
-    //    WIDTH.set(20);
-    //    assert_eq!(f.submit(vr::EVREye::Left), None);
-    //    let newer_width = get_swapchain_width();
-    //    assert_eq!(newer_width, new_width);
-    //}
+        assert_eq!(f.wait_get_poses(), None);
+        SWAPCHAIN_WIDTH.set(20);
+        assert_eq!(f.submit(vr::EVREye::Left), None);
+        let newer_width = get_swapchain_width();
+        assert_ne!(newer_width, new_width);
+    }
 
     #[test]
     fn get_frame_timing() {
@@ -1261,5 +1336,51 @@ mod tests {
             (&raw mut (*timing.as_mut_ptr()).m_nSize).write(0);
         }
         assert!(!f.comp.GetFrameTiming(timing.as_mut_ptr(), 1));
+    }
+
+    #[test]
+    fn zero_dims_texture() {
+        let f = Fixture::new();
+        fakexr::should_render_next_frame(f.comp.openxr.instance.as_raw(), true);
+        SWAPCHAIN_WIDTH.set(0);
+        SWAPCHAIN_HEIGHT.set(0);
+
+        assert_eq!(f.wait_get_poses(), None);
+        assert_eq!(f.submit(vr::EVREye::Left), None);
+        assert_eq!(f.submit(vr::EVREye::Right), None);
+        {
+            let data = f.comp.openxr.session_data.get();
+            let lock = data.comp_data.0.lock().unwrap();
+            let DynFrameController::Fake(ctrl) = lock.as_ref().unwrap() else {
+                panic!("Frame controller was not set up or not faked!");
+            };
+            assert!(ctrl.swapchain_data.is_none());
+        }
+
+        SWAPCHAIN_WIDTH.set(10);
+        assert_eq!(f.wait_get_poses(), None);
+        assert_eq!(f.submit(vr::EVREye::Left), None);
+        assert_eq!(f.submit(vr::EVREye::Right), None);
+        {
+            let data = f.comp.openxr.session_data.get();
+            let lock = data.comp_data.0.lock().unwrap();
+            let DynFrameController::Fake(ctrl) = lock.as_ref().unwrap() else {
+                panic!("Frame controller was not set up or not faked!");
+            };
+            assert!(ctrl.swapchain_data.is_none());
+        }
+
+        SWAPCHAIN_HEIGHT.set(10);
+        assert_eq!(f.wait_get_poses(), None);
+        assert_eq!(f.submit(vr::EVREye::Left), None);
+        assert_eq!(f.submit(vr::EVREye::Right), None);
+        {
+            let data = f.comp.openxr.session_data.get();
+            let lock = data.comp_data.0.lock().unwrap();
+            let DynFrameController::Fake(ctrl) = lock.as_ref().unwrap() else {
+                panic!("Frame controller was not set up or not faked!");
+            };
+            assert!(ctrl.swapchain_data.is_some());
+        }
     }
 }
