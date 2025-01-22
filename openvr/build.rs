@@ -280,10 +280,10 @@ fn verify_fields_are_identical<'a, T>(
 /// unchanged.
 fn unversion_path(path: &mut syn::Path) {
     if path.segments.len() == 1
-        || !path
+        || path
             .segments
             .first()
-            .is_some_and(|segment| segment.ident == "root")
+            .is_none_or(|segment| segment.ident != "root")
     {
         return;
     }
@@ -817,6 +817,7 @@ fn process_and_versionify_types(tokens: TokenStream) -> String {
         #[allow(clippy::tabs_in_doc_comments)]
         #[allow(clippy::doc_lazy_continuation)]
         #[allow(clippy::upper_case_acronyms)]
+        #[allow(clippy::manual_c_str_literals)]
         mod bindings {
             #(#outer_items)*
             pub mod vr {
