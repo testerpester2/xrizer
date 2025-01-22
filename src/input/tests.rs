@@ -739,3 +739,107 @@ fn cased_actions() {
     assert!(pose.bActive);
     assert!(pose.pose.bPoseIsValid);
 }
+
+#[test]
+fn digital_action_initalize_on_failure() {
+    let f = Fixture::new();
+    f.load_actions(c"actions.json");
+    let bad_state = vr::InputDigitalActionData_t {
+        bActive: true,
+        bState: true,
+        activeOrigin: 12345,
+        bChanged: true,
+        fUpdateTime: -999.0,
+    };
+
+    let mut state = bad_state;
+    let bad_handle = 3434343343;
+    assert_ne!(
+        f.input.GetDigitalActionData(
+            bad_handle,
+            &mut state,
+            std::mem::size_of::<vr::InputDigitalActionData_t>() as u32,
+            0
+        ),
+        vr::EVRInputError::None
+    );
+    assert_eq!(state.bActive, false);
+    assert_eq!(state.bState, false);
+    assert_eq!(state.activeOrigin, 0);
+    assert_eq!(state.bChanged, false);
+    assert_eq!(state.fUpdateTime, 0.0);
+
+    let mut state = bad_state;
+    let vecact = f.get_action_handle(c"/actions/set1/in/vec1act");
+    assert_ne!(
+        f.input.GetDigitalActionData(
+            vecact,
+            &mut state,
+            std::mem::size_of::<vr::InputDigitalActionData_t>() as u32,
+            0
+        ),
+        vr::EVRInputError::None
+    );
+
+    assert_eq!(state.bActive, false);
+    assert_eq!(state.bState, false);
+    assert_eq!(state.activeOrigin, 0);
+    assert_eq!(state.bChanged, false);
+    assert_eq!(state.fUpdateTime, 0.0);
+}
+
+#[test]
+fn analog_action_initialize_on_failure() {
+    let f = Fixture::new();
+    f.load_actions(c"actions.json");
+
+    let bad_state = vr::InputAnalogActionData_t {
+        bActive: true,
+        activeOrigin: 12345,
+        x: 300.0,
+        y: 600.0,
+        z: 900.0,
+        deltaX: 1000.0,
+        deltaY: 3000.0,
+        deltaZ: -999.999,
+        fUpdateTime: 395.0,
+    };
+
+    let check_state = |state: vr::InputAnalogActionData_t, desc: &str| {
+        assert_eq!(state.bActive, false, "{desc}");
+        assert_eq!(state.activeOrigin, 0, "{desc}");
+        assert_eq!(state.x, 0.0, "{desc}");
+        assert_eq!(state.deltaX, 0.0, "{desc}");
+        assert_eq!(state.y, 0.0, "{desc}");
+        assert_eq!(state.deltaY, 0.0, "{desc}");
+        assert_eq!(state.z, 0.0, "{desc}");
+        assert_eq!(state.deltaZ, 0.0, "{desc}");
+        assert_eq!(state.fUpdateTime, 0.0, "{desc}");
+    };
+
+    let mut state = bad_state;
+    let bad_handle = 3434343343;
+    assert_ne!(
+        f.input.GetAnalogActionData(
+            bad_handle,
+            &mut state,
+            std::mem::size_of::<vr::InputAnalogActionData_t>() as u32,
+            0
+        ),
+        vr::EVRInputError::None
+    );
+    check_state(state, "bad handle");
+
+    let mut state = bad_state;
+    let boolact = f.get_action_handle(c"/actions/set1/in/boolact");
+    assert_ne!(
+        f.input.GetAnalogActionData(
+            boolact,
+            &mut state,
+            std::mem::size_of::<vr::InputAnalogActionData_t>() as u32,
+            0
+        ),
+        vr::EVRInputError::None
+    );
+    check_state(state, "wrong type");
+}

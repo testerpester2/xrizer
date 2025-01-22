@@ -21,6 +21,7 @@ use openxr as xr;
 use slotmap::{new_key_type, Key, KeyData, SecondaryMap, SlotMap};
 use std::collections::HashMap;
 use std::ffi::{c_char, CStr, CString};
+use std::mem::ManuallyDrop;
 use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicU32, Ordering},
@@ -47,6 +48,34 @@ pub struct Input<C: openxr_data::Compositor> {
     loaded_actions_path: OnceLock<PathBuf>,
     cached_poses: Mutex<CachedSpaces>,
     legacy_packet_num: AtomicU32,
+}
+
+#[derive(Debug)]
+struct Action {
+    path: String,
+}
+
+struct WriteOnDrop<T> {
+    value: ManuallyDrop<T>,
+    ptr: *mut T,
+}
+
+impl<T: Default> WriteOnDrop<T> {
+    fn new(ptr: *mut T) -> Self {
+        Self {
+            value: Default::default(),
+            ptr,
+        }
+    }
+}
+
+impl<T> Drop for WriteOnDrop<T> {
+    fn drop(&mut self) {
+        unsafe {
+            let val = ManuallyDrop::take(&mut self.value);
+            self.ptr.write(val);
+        }
+    }
 }
 
 impl<C: openxr_data::Compositor> Input<C> {
@@ -154,11 +183,6 @@ macro_rules! get_subaction_path {
             }
         }
     };
-}
-
-#[derive(Debug)]
-struct Action {
-    path: String,
 }
 
 impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
@@ -638,6 +662,7 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
             std::mem::size_of::<vr::InputAnalogActionData_t>()
         );
 
+        let mut out = WriteOnDrop::new(action_data);
         get_action_from_handle!(self, handle, session_data, action);
         let subaction_path = get_subaction_path!(self, restrict_to_device, action_data);
 
@@ -671,17 +696,16 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
             }
             _ => return vr::EVRInputError::WrongType,
         };
-        unsafe {
-            action_data.write(vr::InputAnalogActionData_t {
-                bActive: state.is_active,
-                activeOrigin: 0,
-                x: state.current_state.x,
-                deltaX: delta.x,
-                y: state.current_state.y,
-                deltaY: delta.y,
-                ..Default::default()
-            });
-        }
+
+        *out.value = vr::InputAnalogActionData_t {
+            bActive: state.is_active,
+            activeOrigin: 0,
+            x: state.current_state.x,
+            deltaX: delta.x,
+            y: state.current_state.y,
+            deltaY: delta.y,
+            ..Default::default()
+        };
 
         vr::EVRInputError::None
     }
@@ -698,32 +722,22 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
             std::mem::size_of::<vr::InputDigitalActionData_t>()
         );
 
-        let data = self.openxr.session_data.get();
-        let Some(loaded) = data.input_data.get_loaded_actions() else {
-            return vr::EVRInputError::InvalidHandle;
-        };
+        let mut out = WriteOnDrop::new(action_data);
 
+        get_action_from_handle!(self, handle, session_data, action);
         let subaction_path = get_subaction_path!(self, restrict_to_device, action_data);
-        let action = match loaded.try_get_action(handle) {
-            Ok(action) => {
-                let ActionData::Bool(action) = &action else {
-                    return vr::EVRInputError::WrongType;
-                };
-                action
-            }
-            Err(e) => return e,
+        let ActionData::Bool(action) = &action else {
+            return vr::EVRInputError::WrongType;
         };
 
-        let state = action.state(&data.session, subaction_path).unwrap();
-        unsafe {
-            action_data.write(vr::InputDigitalActionData_t {
-                bActive: state.is_active,
-                bState: state.current_state,
-                activeOrigin: restrict_to_device, // TODO
-                bChanged: state.changed_since_last_sync,
-                fUpdateTime: 0.0, // TODO
-            });
-        }
+        let state = action.state(&session_data.session, subaction_path).unwrap();
+        *out.value = vr::InputDigitalActionData_t {
+            bActive: state.is_active,
+            bState: state.current_state,
+            activeOrigin: restrict_to_device, // TODO
+            bChanged: state.changed_since_last_sync,
+            fUpdateTime: 0.0, // TODO
+        };
 
         vr::EVRInputError::None
     }
