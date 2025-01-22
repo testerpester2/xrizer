@@ -3,7 +3,8 @@ use super::{
     ActionData, Input, InteractionProfile,
 };
 use crate::{
-    openxr_data::OpenXrData,
+    graphics_backends::GraphicsBackend,
+    openxr_data::{FrameStream, OpenXrData, SessionCreateInfo},
     vr::{self, IVRInput010_Interface},
 };
 use fakexr::UserPath::*;
@@ -43,17 +44,17 @@ impl openvr::InterfaceImpl for FakeCompositor {
     }
 }
 impl crate::openxr_data::Compositor for FakeCompositor {
-    fn pre_session_restart(
+    fn get_session_create_info(
         &self,
         _: crate::compositor::CompositorSessionData,
-    ) -> openxr::vulkan::SessionCreateInfo {
-        self.0.as_session_create_info()
+    ) -> SessionCreateInfo {
+        SessionCreateInfo::from_info::<xr::Vulkan>(self.0.session_create_info())
     }
-    fn init_frame_controller(
+    fn post_session_restart(
         &self,
         _: &crate::openxr_data::SessionData,
         _: openxr::FrameWaiter,
-        _: openxr::FrameStream<openxr::vulkan::Vulkan>,
+        _: FrameStream,
     ) {
     }
 }

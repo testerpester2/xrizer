@@ -1,3 +1,4 @@
+use super::GraphicsBackend;
 use ash::vk::{self, Handle};
 use log::warn;
 use openvr as vr;
@@ -47,12 +48,83 @@ impl Drop for VulkanData {
     }
 }
 
-impl VulkanData {
-    pub fn get_swapchain_create_info(
-        texture: &vr::VRVulkanTextureData_t,
+impl GraphicsBackend for VulkanData {
+    type Api = xr::Vulkan;
+    type OpenVrTexture = *const vr::VRVulkanTextureData_t;
+
+    fn session_create_info(&self) -> <Self::Api as openxr::Graphics>::SessionCreateInfo {
+        let queue_families = unsafe {
+            self.instance
+                .get_physical_device_queue_family_properties(self.physical_device)
+        };
+        let family = queue_families[self.queue_family_index as usize];
+        let queue_index = (0..family.queue_count)
+            .find(|idx| {
+                let queue = unsafe { self.device.get_device_queue(self.queue_family_index, *idx) };
+                queue == self.queue
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "Could not find queue index for queue {:?} in family {}",
+                    self.queue, self.queue_family_index
+                )
+            });
+
+        xr::vulkan::SessionCreateInfo {
+            instance: self.instance.handle().as_raw() as _,
+            physical_device: self.physical_device.as_raw() as _,
+            device: self.device.handle().as_raw() as _,
+            queue_family_index: self.queue_family_index,
+            queue_index,
+        }
+    }
+
+    fn get_texture(texture: &vr::Texture_t) -> Self::OpenVrTexture {
+        texture.handle.cast()
+    }
+    fn store_swapchain_images(&mut self, images: Vec<u64>) {
+        let images: Vec<vk::Image> = images.into_iter().map(vk::Image::from_raw).collect();
+        let pool = unsafe {
+            self.device
+                .create_command_pool(
+                    &vk::CommandPoolCreateInfo::default()
+                        .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
+                        .queue_family_index(self.queue_family_index),
+                    None,
+                )
+                .unwrap()
+        };
+        let bufs = unsafe {
+            self.device
+                .allocate_command_buffers(
+                    &vk::CommandBufferAllocateInfo::default()
+                        .command_pool(pool)
+                        .level(vk::CommandBufferLevel::PRIMARY)
+                        // We have to copy 2 eyes per swapchain image
+                        .command_buffer_count(images.len() as u32 * 2),
+                )
+                .unwrap()
+        };
+
+        if let Some(data) = self.real_data.replace(RealSessionData {
+            images,
+            pool,
+            bufs,
+            overlay_pipeline: Default::default(),
+        }) {
+            unsafe {
+                self.device.destroy_command_pool(data.pool, None);
+            }
+        }
+    }
+
+    fn swapchain_info_for_texture(
+        &self,
+        texture: *const vr::VRVulkanTextureData_t,
         bounds: vr::VRTextureBounds_t,
         color_space: vr::EColorSpace,
-    ) -> xr::SwapchainCreateInfo<xr::vulkan::Vulkan> {
+    ) -> xr::SwapchainCreateInfo<Self::Api> {
+        let texture = unsafe { texture.as_ref() }.unwrap();
         let (extent, _) = texture_extent_from_bounds(texture, bounds);
         xr::SwapchainCreateInfo {
             create_flags: xr::SwapchainCreateFlags::EMPTY,
@@ -72,8 +144,7 @@ impl VulkanData {
         }
     }
 
-    #[must_use]
-    pub fn copy_texture_to_swapchain(
+    fn copy_texture_to_swapchain(
         &self,
         eye: vr::EVREye,
         texture: *const vr::VRVulkanTextureData_t,
@@ -200,15 +271,16 @@ impl VulkanData {
         }
     }
 
-    pub fn copy_overlay_to_swapchain(
+    fn copy_overlay_to_swapchain(
         &mut self,
-        texture: &vr::VRVulkanTextureData_t,
+        texture: *const vr::VRVulkanTextureData_t,
         bounds: vr::VRTextureBounds_t,
         image_index: usize,
         alpha: f32,
     ) -> xr::Extent2Di {
         let mut data = self.real_data.as_ref().unwrap();
         let buf = data.bufs[image_index];
+        let texture = unsafe { texture.as_ref() }.unwrap();
         let (extent, offset) = texture_extent_from_bounds(texture, bounds);
         let rect = vk::Rect2D {
             offset: vk::Offset2D {
@@ -349,8 +421,9 @@ impl VulkanData {
             height: extent.height as _,
         }
     }
-
-    fn record_commands(&self, buf: vk::CommandBuffer, cmds: impl FnOnce()) {
+}
+impl VulkanData {
+    pub fn record_commands(&self, buf: vk::CommandBuffer, cmds: impl FnOnce()) {
         unsafe {
             self.device
                 .begin_command_buffer(
@@ -373,68 +446,6 @@ impl VulkanData {
                     vk::Fence::null(),
                 )
                 .unwrap();
-        }
-    }
-
-    pub fn as_session_create_info(&self) -> xr::vulkan::SessionCreateInfo {
-        let queue_families = unsafe {
-            self.instance
-                .get_physical_device_queue_family_properties(self.physical_device)
-        };
-        let family = queue_families[self.queue_family_index as usize];
-        let queue_index = (0..family.queue_count)
-            .find(|idx| {
-                let queue = unsafe { self.device.get_device_queue(self.queue_family_index, *idx) };
-                queue == self.queue
-            })
-            .unwrap_or_else(|| {
-                panic!(
-                    "Could not find queue index for queue {:?} in family {}",
-                    self.queue, self.queue_family_index
-                )
-            });
-
-        xr::vulkan::SessionCreateInfo {
-            instance: self.instance.handle().as_raw() as _,
-            physical_device: self.physical_device.as_raw() as _,
-            device: self.device.handle().as_raw() as _,
-            queue_family_index: self.queue_family_index,
-            queue_index,
-        }
-    }
-
-    pub fn post_swapchain_create(&mut self, images: Vec<vk::Image>) {
-        let pool = unsafe {
-            self.device
-                .create_command_pool(
-                    &vk::CommandPoolCreateInfo::default()
-                        .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
-                        .queue_family_index(self.queue_family_index),
-                    None,
-                )
-                .unwrap()
-        };
-        let bufs = unsafe {
-            self.device
-                .allocate_command_buffers(
-                    &vk::CommandBufferAllocateInfo::default()
-                        .command_pool(pool)
-                        .level(vk::CommandBufferLevel::PRIMARY)
-                        // We have to copy 2 eyes per swapchain image
-                        .command_buffer_count(images.len() as u32 * 2),
-                )
-                .unwrap()
-        };
-
-        if let Some(data) = self.real_data.replace(RealSessionData {
-            images,
-            pool,
-            bufs,
-            overlay_pipeline: Default::default(),
-        }) {
-            unsafe {
-                self.device.destroy_command_pool(data.pool, None);
-            }
         }
     }
 
@@ -819,7 +830,7 @@ fn get_colorspace_corrected_format(format: vk::Format, color_space: vr::EColorSp
             vk::Format::B8G8R8A8_UNORM | vk::Format::B8G8R8A8_SRGB => vk::Format::B8G8R8A8_SRGB,
             _ => panic!("Unhandled texture format: {format:?}"),
         },
-        vr::EColorSpace::Linear => todo!(),
+        vr::EColorSpace::Linear => todo!("Linear colorspace not implemented yet"),
     }
 }
 

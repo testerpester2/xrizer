@@ -43,7 +43,7 @@ pub(super) struct LegacyActionData {
 impl LegacyActionData {
     pub fn new<'a>(
         instance: &'a xr::Instance,
-        session: &'a xr::Session<xr::vulkan::Vulkan>,
+        session: &'a xr::Session<xr::AnyGraphics>,
         left_hand: xr::Path,
         right_hand: xr::Path,
     ) -> Self {

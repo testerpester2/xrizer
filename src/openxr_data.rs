@@ -1,8 +1,9 @@
 use crate::{
     clientcore::{Injected, Injector},
-    graphics_backends::VulkanData,
+    graphics_backends::{supported_apis_enum, GraphicsBackend, VulkanData},
     input::{InteractionProfile, Profiles},
 };
+use derive_more::{Deref, From, TryInto};
 use glam::f32::{Quat, Vec3};
 use log::info;
 use openvr as vr;
@@ -14,17 +15,17 @@ use std::sync::{
 };
 
 pub trait Compositor: vr::InterfaceImpl {
-    fn init_frame_controller(
+    fn post_session_restart(
         &self,
         session: &SessionData,
         waiter: xr::FrameWaiter,
-        stream: xr::FrameStream<xr::vulkan::Vulkan>,
+        stream: FrameStream,
     );
 
-    fn pre_session_restart(
+    fn get_session_create_info(
         &self,
         data: crate::compositor::CompositorSessionData,
-    ) -> xr::vulkan::SessionCreateInfo;
+    ) -> SessionCreateInfo;
 }
 
 pub type RealOpenXrData = OpenXrData<crate::compositor::Compositor>;
@@ -80,6 +81,7 @@ impl<C: Compositor> OpenXrData<C> {
         let supported_exts = entry.enumerate_extensions().unwrap();
         let mut exts = xr::ExtensionSet::default();
         exts.khr_vulkan_enable = supported_exts.khr_vulkan_enable;
+        exts.khr_opengl_enable = supported_exts.khr_opengl_enable;
         exts.ext_hand_tracking = supported_exts.ext_hand_tracking;
         exts.khr_visibility_mask = supported_exts.khr_visibility_mask;
 
@@ -169,7 +171,6 @@ impl<C: Compositor> OpenXrData<C> {
         }
     }
 
-    /// TODO: support non vulkan session
     pub fn restart_session(&self) {
         self.end_session();
         let mut session_guard = self.session_data.0.write().unwrap();
@@ -180,7 +181,7 @@ impl<C: Compositor> OpenXrData<C> {
             .get()
             .expect("Session is being restarted, but compositor has not been set up!");
 
-        let info = comp.pre_session_restart(std::mem::take(&mut session_guard.comp_data));
+        let info = comp.get_session_create_info(std::mem::take(&mut session_guard.comp_data));
 
         // We need to destroy the old session before creating the new one.
         let _ = unsafe { ManuallyDrop::take(&mut *session_guard) };
@@ -189,7 +190,7 @@ impl<C: Compositor> OpenXrData<C> {
             SessionData::new(&self.instance, self.system_id, origin, Some(&info))
                 .expect("Failed to initalize new session");
 
-        comp.init_frame_controller(&session, waiter, stream);
+        comp.post_session_restart(&session, waiter, stream);
 
         if let Some(input) = self.input.get() {
             input.post_session_restart(&session);
@@ -301,8 +302,27 @@ impl SessionReadGuard {
     }
 }
 
+supported_apis_enum!(pub enum GraphicalSession: xr::Session);
+supported_apis_enum!(pub enum FrameStream: xr::FrameStream);
+
+// Implementing From results in a "conflicting implementations" error: https://github.com/rust-lang/rust/issues/85576
+#[repr(transparent)]
+#[derive(Deref)]
+pub struct CreateInfo<G: xr::Graphics>(pub G::SessionCreateInfo);
+supported_apis_enum!(pub enum SessionCreateInfo: CreateInfo);
+
+impl SessionCreateInfo {
+    pub fn from_info<G: xr::Graphics>(info: G::SessionCreateInfo) -> Self
+    where
+        Self: From<CreateInfo<G>>,
+    {
+        Self::from(CreateInfo(info))
+    }
+}
+
 pub struct SessionData {
-    pub session: xr::Session<xr::vulkan::Vulkan>,
+    pub session: xr::Session<xr::AnyGraphics>,
+    session_graphics: GraphicalSession,
     pub state: xr::SessionState,
     pub view_space: xr::Space,
     // The "reference" space is always equivalent to the reference space with an identity offset.
@@ -344,31 +364,56 @@ impl SessionData {
         instance: &xr::Instance,
         system_id: xr::SystemId,
         current_origin: vr::ETrackingUniverseOrigin,
-        create_info: Option<&xr::vulkan::SessionCreateInfo>,
-    ) -> Result<(Self, xr::FrameWaiter, xr::FrameStream<xr::vulkan::Vulkan>), SessionCreationError>
-    {
-        // required to call
-        let _ = instance
-            .graphics_requirements::<xr::vulkan::Vulkan>(system_id)
-            .unwrap();
-
+        create_info: Option<&SessionCreateInfo>,
+    ) -> Result<(Self, xr::FrameWaiter, FrameStream), SessionCreationError> {
         let info;
         let (temp_vulkan, info) = if let Some(info) = create_info {
-            // Monado seems to (wrongly) give validation errors unless we call this.
-            let pd = unsafe { instance.vulkan_graphics_device(system_id, info.instance) }.unwrap();
-            assert_eq!(pd, info.physical_device);
+            if let SessionCreateInfo::Vulkan(info) = info {
+                // Monado seems to (incorrectly) give validation errors unless we call this.
+                let pd =
+                    unsafe { instance.vulkan_graphics_device(system_id, info.instance) }.unwrap();
+                assert_eq!(pd, info.physical_device);
+            }
             (None, info)
         } else {
             let vk = VulkanData::new_temporary(instance, system_id);
-            info = vk.as_session_create_info();
+            info = SessionCreateInfo::from_info::<xr::Vulkan>(vk.session_create_info());
             (Some(vk), &info)
         };
 
-        let (session, waiter, stream) =
-            unsafe { instance.create_session::<xr::vulkan::Vulkan>(system_id, info) }
-                .map_err(SessionCreationError::SessionCreationFailed)?;
-        info!("New session created!");
+        #[macros::any_graphics(SessionCreateInfo)]
+        fn create_session<G: xr::Graphics>(
+            info: &CreateInfo<G>,
+            instance: &xr::Instance,
+            system_id: xr::SystemId,
+        ) -> xr::Result<(
+            xr::Session<xr::AnyGraphics>,
+            GraphicalSession,
+            xr::FrameWaiter,
+            FrameStream,
+        )>
+        where
+            GraphicalSession: From<xr::Session<G>>,
+            FrameStream: From<xr::FrameStream<G>>,
+        {
+            // required to call
+            let _ = instance.graphics_requirements::<G>(system_id).unwrap();
 
+            unsafe { instance.create_session(system_id, &info.0) }.map(|(session, w, s)| {
+                (
+                    session.clone().into_any_graphics(),
+                    session.into(),
+                    w,
+                    s.into(),
+                )
+            })
+        }
+
+        let (session, session_graphics, waiter, stream) = info
+            .with_any_graphics::<create_session>((instance, system_id))
+            .map_err(SessionCreationError::SessionCreationFailed)?;
+
+        info!("New session created!");
         let view_space = session
             .create_reference_space(xr::ReferenceSpaceType::VIEW, xr::Posef::IDENTITY)
             .unwrap();
@@ -408,6 +453,7 @@ impl SessionData {
             SessionData {
                 temp_vulkan,
                 session,
+                session_graphics,
                 state: xr::SessionState::READY,
                 view_space,
                 local_space_reference,
@@ -422,6 +468,24 @@ impl SessionData {
             waiter,
             stream,
         ))
+    }
+
+    pub fn create_swapchain<G: xr::Graphics>(
+        &self,
+        info: &xr::SwapchainCreateInfo<G>,
+    ) -> xr::Result<xr::Swapchain<G>>
+    where
+        for<'a> &'a GraphicalSession: TryInto<&'a xr::Session<G>, Error: std::fmt::Display>,
+    {
+        (&self.session_graphics)
+            .try_into()
+            .unwrap_or_else(|e| {
+                panic!(
+                    "Session was not using API {}: {e}",
+                    std::any::type_name::<G>()
+                )
+            })
+            .create_swapchain(info)
     }
 
     pub fn tracking_space(&self) -> &xr::Space {

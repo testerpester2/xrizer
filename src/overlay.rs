@@ -1,9 +1,8 @@
 use crate::{
     compositor::{is_usable_swapchain, Compositor},
-    graphics_backends::VulkanData,
-    openxr_data::{OpenXrData, SessionData},
+    graphics_backends::{supported_apis_enum, GraphicsBackend, SupportedBackend},
+    openxr_data::{GraphicalSession, OpenXrData, SessionData},
 };
-use ash::vk::{self, Handle};
 use log::{debug, trace};
 use openvr as vr;
 use openxr as xr;
@@ -32,13 +31,24 @@ impl OverlayMan {
         }
     }
 
-    pub fn get_layers<'a>(
+    pub fn get_layers<'a, G: xr::Graphics>(
         &self,
         session: &'a SessionData,
-    ) -> Vec<xr::CompositionLayerQuad<'a, xr::Vulkan>> {
+    ) -> Vec<xr::CompositionLayerQuad<'a, G>>
+    where
+        for<'b> &'b AnySwapchainMap: TryInto<&'b SwapchainMap<G>, Error: std::fmt::Display>,
+    {
         let mut overlays = self.overlays.write().unwrap();
         let swapchains = session.overlay_data.swapchains.lock().unwrap();
-
+        let Some(swapchains) = swapchains.as_ref() else {
+            return Vec::new();
+        };
+        let swapchains: &SwapchainMap<G> = swapchains.try_into().unwrap_or_else(|e| {
+            panic!(
+                "Requested layers for API {}, but overlays are using a different API - {e}",
+                std::any::type_name::<G>()
+            )
+        });
         let mut layers = Vec::with_capacity(overlays.len());
         for (key, overlay) in overlays.iter_mut() {
             if !overlay.visible {
@@ -88,12 +98,18 @@ impl OverlayMan {
                         / data.rect.extent.width as f32,
                 });
 
-            // SAFETY: We need to remove the lifetimes to be able to return this layer.
-            // Internally, CompositionLayerQuad is using the raw OpenXR handles and PhantomData, not actual
-            // references, so returning it as long as we can guarantee the lifetimes of the space and
-            // swapchain is fine. Both of these are derived from the SessionData,
-            // so we should have no lifetime problems.
-            let layer = unsafe { xr::CompositionLayerQuad::from_raw(layer.into_raw()) };
+            fn lifetime_extend<'a, 'b: 'a, G: xr::Graphics>(
+                layer: xr::CompositionLayerQuad<'a, G>,
+            ) -> xr::CompositionLayerQuad<'b, G> {
+                // SAFETY: We need to remove the lifetimes to be able to return this layer.
+                // Internally, CompositionLayerQuad is using the raw OpenXR handles and PhantomData, not actual
+                // references, so returning it as long as we can guarantee the lifetimes of the space and
+                // swapchain is fine. Both of these are derived from the SessionData,
+                // so we should have no lifetime problems.
+                unsafe { xr::CompositionLayerQuad::from_raw(layer.into_raw()) }
+            }
+
+            let layer = lifetime_extend(layer);
             layers.push(layer);
         }
 
@@ -103,17 +119,20 @@ impl OverlayMan {
 }
 
 new_key_type!(
-    struct OverlayKey;
+    pub(crate) struct OverlayKey;
 );
 
-struct SwapchainData {
-    swapchain: xr::Swapchain<xr::Vulkan>,
-    info: xr::SwapchainCreateInfo<xr::Vulkan>,
+pub(crate) struct SwapchainData<G: xr::Graphics> {
+    swapchain: xr::Swapchain<G>,
+    info: xr::SwapchainCreateInfo<G>,
 }
+
+pub(crate) type SwapchainMap<G> = SecondaryMap<OverlayKey, SwapchainData<G>>;
+supported_apis_enum!(pub(crate) enum AnySwapchainMap: SwapchainMap);
 
 #[derive(Default)]
 pub struct OverlaySessionData {
-    swapchains: Mutex<SecondaryMap<OverlayKey, SwapchainData>>,
+    swapchains: Mutex<Option<AnySwapchainMap>>,
 }
 
 struct Overlay {
@@ -124,7 +143,7 @@ struct Overlay {
     visible: bool,
     bounds: vr::VRTextureBounds_t,
     transform: Option<(vr::ETrackingUniverseOrigin, vr::HmdMatrix34_t)>,
-    compositor: Option<VulkanData>,
+    compositor: Option<SupportedBackend>,
     last_frame: Option<FrameData>,
 }
 
@@ -158,59 +177,93 @@ impl Overlay {
         session_data: &SessionData,
         texture: vr::Texture_t,
     ) {
-        assert_eq!(
-            texture.eType,
-            vr::ETextureType::Vulkan,
-            "non vulkan textures unsupported"
-        );
-        let texture_data = unsafe { texture.handle.cast::<vr::VRVulkanTextureData_t>().read() };
-        let data = self
+        let backend = self
             .compositor
-            .get_or_insert_with(|| VulkanData::new(&texture_data));
+            .get_or_insert_with(|| SupportedBackend::new(&texture, self.bounds));
+
+        #[macros::any_graphics(SupportedBackend)]
+        fn create_swapchain_map<G: GraphicsBackend>(_: &G) -> AnySwapchainMap
+        where
+            AnySwapchainMap: From<SwapchainMap<G::Api>>,
+        {
+            SwapchainMap::<G::Api>::default().into()
+        }
 
         let mut swapchains = session_data.overlay_data.swapchains.lock().unwrap();
-        let mut create_swapchain = || {
-            let info = VulkanData::get_swapchain_create_info(
-                &texture_data,
-                self.bounds,
-                texture.eColorSpace,
-            );
-            let swapchain = session_data.session.create_swapchain(&info).unwrap();
+        let swapchains =
+            swapchains.get_or_insert_with(|| backend.with_any_graphics::<create_swapchain_map>(()));
 
-            let imgs = swapchain
-                .enumerate_images()
-                .unwrap()
-                .into_iter()
-                .map(vk::Image::from_raw)
-                .collect();
-            data.post_swapchain_create(imgs);
-            SwapchainData { swapchain, info }
-        };
-
-        let swapchain = {
-            let data = swapchains
-                .entry(key)
-                .unwrap()
-                .or_insert_with(&mut create_swapchain);
-            if !is_usable_swapchain(
-                &data.info,
-                &VulkanData::get_swapchain_create_info(
-                    &texture_data,
-                    self.bounds,
+        #[macros::any_graphics(SupportedBackend)]
+        fn set_swapchain_texture<G: GraphicsBackend>(
+            backend: &mut G,
+            session_data: &SessionData,
+            overlay: &mut Overlay,
+            map: &mut AnySwapchainMap,
+            key: OverlayKey,
+            texture: vr::Texture_t,
+        ) -> xr::Extent2Di
+        where
+            for<'a> &'a mut SwapchainMap<G::Api>:
+                TryFrom<&'a mut AnySwapchainMap, Error: std::fmt::Display>,
+            for<'a> &'a GraphicalSession:
+                TryInto<&'a xr::Session<G::Api>, Error: std::fmt::Display>,
+            <G::Api as xr::Graphics>::Format: Eq,
+        {
+            let map: &mut SwapchainMap<G::Api> = map.try_into().unwrap_or_else(|e| {
+                panic!(
+                    "Received different texture type for overlay than current ({}) - {e}",
+                    std::any::type_name::<G::Api>()
+                );
+            });
+            let b_texture = G::get_texture(&texture);
+            let tex_swapchain_info =
+                backend.swapchain_info_for_texture(b_texture, overlay.bounds, texture.eColorSpace);
+            let mut create_swapchain = || {
+                let info = backend.swapchain_info_for_texture(
+                    b_texture,
+                    overlay.bounds,
                     texture.eColorSpace,
-                ),
-            ) {
-                *data = create_swapchain();
-            }
-            &mut data.swapchain
-        };
-        let idx = swapchain.acquire_image().unwrap();
-        swapchain.wait_image(xr::Duration::INFINITE).unwrap();
+                );
+                let swapchain = session_data.create_swapchain(&info).unwrap();
+                let images = swapchain
+                    .enumerate_images()
+                    .expect("Couldn't enumerate swapchain images");
+                backend.store_swapchain_images(images);
+                SwapchainData { swapchain, info }
+            };
+            let swapchain = {
+                let data = map
+                    .entry(key)
+                    .unwrap()
+                    .or_insert_with(&mut create_swapchain);
+                if !is_usable_swapchain(&data.info, &tex_swapchain_info) {
+                    *data = create_swapchain();
+                }
+                &mut data.swapchain
+            };
+            let idx = swapchain.acquire_image().unwrap();
+            swapchain.wait_image(xr::Duration::INFINITE).unwrap();
 
-        let extent =
-            data.copy_overlay_to_swapchain(&texture_data, self.bounds, idx as usize, self.alpha);
-        swapchain.release_image().unwrap();
+            let extent = backend.copy_overlay_to_swapchain(
+                b_texture,
+                overlay.bounds,
+                idx as usize,
+                overlay.alpha,
+            );
+            swapchain.release_image().unwrap();
 
+            extent
+        }
+
+        let mut backend = self.compositor.take().unwrap();
+        let extent = backend.with_any_graphics_mut::<set_swapchain_texture>((
+            session_data,
+            self,
+            swapchains,
+            key,
+            texture,
+        ));
+        self.compositor = Some(backend);
         self.last_frame = Some(FrameData {
             rect: xr::Rect2Di {
                 extent,

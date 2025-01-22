@@ -272,7 +272,7 @@ fn find_action(actions: &LoadedActionDataMap, name: &str) -> bool {
 }
 
 fn load_actions(
-    session: &xr::Session<xr::vulkan::Vulkan>,
+    session: &xr::Session<xr::AnyGraphics>,
     english: Option<&Localization>,
     sets: &HashMap<String, xr::ActionSet>,
     actions: Vec<ActionType>,

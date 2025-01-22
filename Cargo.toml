@@ -41,6 +41,11 @@ egui = "0.28.1"
 egui-miniquad = "0.15.0"
 miniquad = "=0.4.0"
 webbrowser = "0.5.5"
+glutin_glx_sys = "0.6.0"
+libc = "0.2.169"
+derive_more = { version = "1.0.0", features = ["deref", "from", "try_into"] }
+gl = "0.14.0"
+
 [build-dependencies]
 shaders = { path = "shaders" }
 
@@ -48,3 +53,4 @@ shaders = { path = "shaders" }
 libloading = "0.8.5"
 test-cdylib = "1.1.0"
 fakexr = { path = "fakexr" }
+macros = { path = "macros", features = ["test"]}

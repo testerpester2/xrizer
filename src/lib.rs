@@ -2,6 +2,7 @@ mod applications;
 mod chaperone;
 mod clientcore;
 mod compositor;
+mod graphics_backends;
 mod input;
 mod misc_unknown;
 mod openxr_data;
@@ -10,7 +11,6 @@ mod overlayview;
 mod rendermodels;
 mod screenshots;
 mod system;
-mod graphics_backends;
 
 #[cfg(not(test))]
 mod error_dialog;

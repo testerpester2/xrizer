@@ -3,10 +3,12 @@ name = "macros"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+test = []
+
 [lib]
 proc-macro = true
 
 [dependencies]
 quote = "1.0.37"
 syn = "2.0.77"
-

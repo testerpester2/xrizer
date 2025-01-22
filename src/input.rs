@@ -1221,7 +1221,7 @@ impl CachedSpaces {
 
 fn setup_legacy_bindings(
     instance: &xr::Instance,
-    session: &xr::Session<xr::vulkan::Vulkan>,
+    session: &xr::Session<xr::AnyGraphics>,
     legacy: &LegacyActionData,
 ) {
     debug!("setting up legacy bindings");
