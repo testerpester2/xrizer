@@ -1,0 +1,11 @@
+{
+	"actions": [
+		{
+			"name":	"/actions/set1/in/boolact",
+			"requirement": "mandatory",
+			"type":	"boolean"
+		}
+	],
+	"default_bindings":	[],
+	"localization":	[]
+}

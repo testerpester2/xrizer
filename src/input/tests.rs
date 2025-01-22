@@ -108,7 +108,9 @@ impl Fixture {
         let path = &[ACTIONS_JSONS_DIR.to_bytes(), file.to_bytes_with_nul()].concat();
         assert_eq!(
             self.input.SetActionManifestPath(path.as_ptr() as _),
-            vr::EVRInputError::None
+            vr::EVRInputError::None,
+            "check manifest path: {}",
+            std::str::from_utf8(path).expect("Non utf8 path!")
         );
     }
 
@@ -842,4 +844,20 @@ fn analog_action_initialize_on_failure() {
         vr::EVRInputError::None
     );
     check_state(state, "wrong type");
+}
+
+#[test]
+fn implicit_action_sets() {
+    let f = Fixture::new();
+    let set1 = f.get_action_set_handle(c"/actions/set1");
+    let boolact = f.get_action_handle(c"/actions/set1/in/boolact");
+    f.load_actions(c"actions_missing_sets.json");
+
+    f.sync(vr::VRActiveActionSet_t {
+        ulActionSet: set1,
+        ..Default::default()
+    });
+
+    let res = f.get_bool_state(boolact);
+    assert!(matches!(res, Ok(_)), "{res:?}");
 }

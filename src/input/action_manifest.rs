@@ -52,7 +52,7 @@ impl<C: openxr_data::Compositor> Input<C> {
             .localization
             .and_then(|l| l.into_iter().find(|l| l.language_tag == "en_US"));
 
-        let sets = load_action_sets(
+        let mut sets = load_action_sets(
             &self.openxr.instance,
             english.as_ref(),
             manifest.action_sets,
@@ -60,9 +60,10 @@ impl<C: openxr_data::Compositor> Input<C> {
         debug!("Loaded {} action sets.", sets.len());
 
         let mut actions = load_actions(
+            &self.openxr.instance,
             &session_data.session,
             english.as_ref(),
-            &sets,
+            &mut sets,
             manifest.actions,
             self.openxr.left_hand.subaction_path,
             self.openxr.right_hand.subaction_path,
@@ -147,6 +148,7 @@ impl<C: openxr_data::Compositor> Input<C> {
 #[derive(Deserialize)]
 struct ActionManifest {
     default_bindings: Vec<DefaultBindings>,
+    #[serde(default)] // optional apparently
     action_sets: Vec<ActionSetJson>,
     actions: Vec<ActionType>,
     localization: Option<Vec<Localization>>,
@@ -225,6 +227,27 @@ struct Localization {
     localized_names: HashMap<String, String>,
 }
 
+fn create_action_set(
+    instance: &xr::Instance,
+    path: &str,
+    localized: Option<&str>,
+) -> Result<xr::ActionSet, vr::EVRInputError> {
+    let path = path.to_lowercase();
+    // OpenXR does not like the "/actions/<set name>" format, so we need to strip the prefix
+    let Some(xr_friendly_name) = path.strip_prefix("/actions/") else {
+        error!("Action set {path} missing actions prefix.");
+        return Err(vr::EVRInputError::InvalidParam);
+    };
+
+    trace!("Creating action set {xr_friendly_name} ({path:?}) (localized: {localized:?})");
+    instance
+        .create_action_set(xr_friendly_name, localized.unwrap_or(&path), 0)
+        .map_err(|e| {
+            error!("Failed to create action set: {e}");
+            vr::EVRInputError::InvalidParam
+        })
+}
+
 fn load_action_sets(
     instance: &xr::Instance,
     english: Option<&Localization>,
@@ -232,25 +255,9 @@ fn load_action_sets(
 ) -> Result<HashMap<String, xr::ActionSet>, vr::EVRInputError> {
     let mut action_sets = HashMap::new();
     for ActionSetJson { path } in sets {
-        let localized = english
-            .and_then(|e| e.localized_names.get(&path))
-            .unwrap_or(&path);
+        let localized = english.and_then(|e| e.localized_names.get(&path));
 
-        let path = path.to_lowercase();
-        // OpenXR does not like the "/actions/<set name>" format, so we need to strip the prefix
-        let Some(xr_friendly_name) = path.strip_prefix("/actions/") else {
-            error!("Action set {path} missing actions prefix.");
-            return Err(vr::EVRInputError::InvalidParam);
-        };
-
-        trace!("Creating action set {xr_friendly_name} ({path:?}) (localized: {localized})");
-        let set = instance
-            .create_action_set(xr_friendly_name, localized, 0)
-            .map_err(|e| {
-                error!("Failed to create action set: {e}");
-                vr::EVRInputError::InvalidParam
-            })?;
-
+        let set = create_action_set(instance, &path, localized.map(String::as_str))?;
         action_sets.insert(path, set);
     }
     Ok(action_sets)
@@ -272,9 +279,10 @@ fn find_action(actions: &LoadedActionDataMap, name: &str) -> bool {
 }
 
 fn load_actions(
+    instance: &xr::Instance,
     session: &xr::Session<xr::AnyGraphics>,
     english: Option<&Localization>,
-    sets: &HashMap<String, xr::ActionSet>,
+    sets: &mut HashMap<String, xr::ActionSet>,
     actions: Vec<ActionType>,
     left_hand: xr::Path,
     right_hand: xr::Path,
@@ -283,8 +291,9 @@ fn load_actions(
     let mut long_name_idx = 0;
     for action in actions {
         fn create_action<T: xr::ActionTy>(
+            instance: &xr::Instance,
             data: &ActionDataCommon,
-            sets: &HashMap<String, xr::ActionSet>,
+            sets: &mut HashMap<String, xr::ActionSet>,
             english: Option<&Localization>,
             paths: &[xr::Path],
             long_name_idx: &mut usize,
@@ -296,7 +305,18 @@ fn load_actions(
             let path = data.name.to_lowercase();
             let set_end_idx = path.match_indices('/').nth(2).unwrap().0;
             let set_name = &path[0..set_end_idx];
-            let set = &sets[set_name];
+            let entry;
+            let set = if let Some(set) = sets.get(set_name) {
+                set
+            } else {
+                warn!("Action set {set_name} is missing from manifest, creating it...");
+                let set = create_action_set(instance, set_name, None).map_err(|e| {
+                    error!("Creating implicit action set failed: {e:?}");
+                    xr::sys::Result::ERROR_INITIALIZATION_FAILED
+                })?;
+                entry = sets.entry(set_name.to_string()).insert_entry(set);
+                entry.get()
+            };
             let mut xr_friendly_name = path.rsplit_once('/').unwrap().1.replace([' ', ','], "_");
             if xr_friendly_name.len() > xr::sys::MAX_ACTION_NAME_SIZE {
                 let idx_str = ["_ln", &long_name_idx.to_string()].concat();
@@ -328,7 +348,8 @@ fn load_actions(
         let paths = &[left_hand, right_hand];
         macro_rules! create_action {
             ($ty:ty, $data:expr) => {
-                create_action::<$ty>(&$data, sets, english, paths, &mut long_name_idx).unwrap()
+                create_action::<$ty>(instance, &$data, sets, english, paths, &mut long_name_idx)
+                    .unwrap()
             };
         }
         use super::ActionData::*;
