@@ -1402,13 +1402,29 @@ extern "system" fn end_frame(session: xr::Session, _info: *const xr::FrameEndInf
 }
 
 extern "system" fn locate_views(
-    _session: xr::Session,
+    session: xr::Session,
     _info: *const xr::ViewLocateInfo,
-    _state: *mut xr::ViewState,
+    state: *mut xr::ViewState,
     _capacity: u32,
-    _output: *mut u32,
+    output: *mut u32,
     _views: *mut xr::View,
 ) -> xr::Result {
+    let _session = get_handle!(session);
+    if !state.is_null() {
+        unsafe {
+            state.write(xr::ViewState {
+                ty: xr::ViewState::TYPE,
+                next: std::ptr::null_mut(),
+                view_state_flags: xr::ViewStateFlags::EMPTY,
+            });
+        }
+    }
+
+    if !output.is_null() {
+        unsafe {
+            output.write(0);
+        }
+    }
     xr::Result::SUCCESS
 }
 
