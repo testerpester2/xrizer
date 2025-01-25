@@ -1,10 +1,21 @@
 {
 	"actions": [
 		{
-			"name":	"/actions/set1/in/boolact",
+			"name":	"/actions/Set1/in/boolact",
+			"requirement": "mandatory",
+			"type":	"boolean"
+		},
+		{
+			"name":	"/actions/Set2/in/boolact",
 			"requirement": "mandatory",
 			"type":	"boolean"
 		}
+	],
+	"action_sets": [
+        {
+            "name": "/actions/Set2",
+            "usage": "single"
+        }
 	],
 	"default_bindings":	[],
 	"localization":	[]

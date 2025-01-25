@@ -377,6 +377,7 @@ struct Instance {
     paths: Mutex<SlotMap<DefaultKey, String>>,
     string_to_path: Mutex<HashMap<String, DefaultKey>>,
     should_render: AtomicBool,
+    action_sets: Mutex<HashSet<xr::ActionSet>>,
 }
 
 impl Instance {
@@ -530,6 +531,8 @@ impl Space {
 
 struct ActionSet {
     instance: Weak<Instance>,
+    name: CString,
+    localized: CString,
     pending_actions: RwLock<Vec<Arc<Action>>>,
     actions: OnceLock<Vec<Arc<Action>>>,
     active: AtomicBool,
@@ -616,6 +619,7 @@ extern "system" fn create_instance(
         paths: Mutex::new(paths),
         string_to_path: Mutex::new(string_to_path),
         should_render: false.into(),
+        action_sets: Default::default(),
     });
     unsafe {
         *instance = inst.to_xr();
@@ -685,12 +689,32 @@ extern "system" fn destroy_session(session: xr::Session) -> xr::Result {
 
 extern "system" fn create_action_set(
     instance: xr::Instance,
-    _: *const xr::ActionSetCreateInfo,
+    info: *const xr::ActionSetCreateInfo,
     set: *mut xr::ActionSet,
 ) -> xr::Result {
     let instance = get_handle!(instance);
+    let Some(info) = (unsafe { info.as_ref() }) else {
+        return xr::Result::ERROR_VALIDATION_FAILURE;
+    };
+
+    let name = unsafe { CStr::from_ptr(info.action_set_name.as_ptr()) }.to_owned();
+    let localized = unsafe { CStr::from_ptr(info.localized_action_set_name.as_ptr()) }.to_owned();
+
+    for set in instance.action_sets.lock().unwrap().iter().copied() {
+        let set = get_handle!(set);
+        if set.name == name {
+            return xr::Result::ERROR_NAME_DUPLICATED;
+        }
+
+        if set.localized == localized {
+            return xr::Result::ERROR_LOCALIZED_NAME_DUPLICATED;
+        }
+    }
+
     let s = Arc::new(ActionSet {
         instance: Arc::downgrade(&instance),
+        name,
+        localized,
         actions: OnceLock::new(),
         pending_actions: RwLock::default(),
         active: false.into(),
@@ -698,11 +722,17 @@ extern "system" fn create_action_set(
 
     unsafe {
         *set = s.to_xr();
+        instance.action_sets.lock().unwrap().insert(*set);
     }
     xr::Result::SUCCESS
 }
 
 extern "system" fn destroy_action_set(set: xr::ActionSet) -> xr::Result {
+    let set_ = get_handle!(set);
+    let Some(instance) = set_.instance.upgrade() else {
+        return xr::Result::ERROR_INSTANCE_LOST;
+    };
+    instance.action_sets.lock().unwrap().remove(&set);
     destroy_handle(set)
 }
 

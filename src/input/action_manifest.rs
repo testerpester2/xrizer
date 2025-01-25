@@ -232,7 +232,6 @@ fn create_action_set(
     path: &str,
     localized: Option<&str>,
 ) -> Result<xr::ActionSet, vr::EVRInputError> {
-    let path = path.to_lowercase();
     // OpenXR does not like the "/actions/<set name>" format, so we need to strip the prefix
     let Some(xr_friendly_name) = path.strip_prefix("/actions/") else {
         error!("Action set {path} missing actions prefix.");
@@ -243,7 +242,7 @@ fn create_action_set(
     instance
         .create_action_set(xr_friendly_name, localized.unwrap_or(&path), 0)
         .map_err(|e| {
-            error!("Failed to create action set: {e}");
+            error!("Failed to create action set {xr_friendly_name}: {e}");
             vr::EVRInputError::InvalidParam
         })
 }
@@ -257,6 +256,7 @@ fn load_action_sets(
     for ActionSetJson { path } in sets {
         let localized = english.and_then(|e| e.localized_names.get(&path));
 
+        let path = path.to_lowercase();
         let set = create_action_set(instance, &path, localized.map(String::as_str))?;
         action_sets.insert(path, set);
     }
