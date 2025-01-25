@@ -48,7 +48,8 @@ impl vr::IVRRenderModels006_Interface for RenderModels {
         _: *const vr::RenderModel_ControllerMode_State_t,
         _: *mut vr::RenderModel_ComponentState_t,
     ) -> bool {
-        todo!()
+        crate::warn_unimplemented!("GetComponentState");
+        false
     }
     fn GetComponentStateForDevicePath(
         &self,
@@ -58,7 +59,8 @@ impl vr::IVRRenderModels006_Interface for RenderModels {
         _: *const vr::RenderModel_ControllerMode_State_t,
         _: *mut vr::RenderModel_ComponentState_t,
     ) -> bool {
-        todo!()
+        crate::warn_unimplemented!("GetComponentStateForDevicePath");
+        false
     }
     fn GetComponentRenderModelName(
         &self,
@@ -74,7 +76,8 @@ impl vr::IVRRenderModels006_Interface for RenderModels {
         _: *const std::os::raw::c_char,
         _: *const std::os::raw::c_char,
     ) -> u64 {
-        todo!()
+        crate::warn_unimplemented!("GetComponentButtonMask");
+        0
     }
     fn GetComponentName(
         &self,
@@ -86,10 +89,12 @@ impl vr::IVRRenderModels006_Interface for RenderModels {
         todo!()
     }
     fn GetComponentCount(&self, _: *const std::os::raw::c_char) -> u32 {
-        todo!()
+        crate::warn_unimplemented!("GetComponentCount");
+        0
     }
     fn GetRenderModelCount(&self) -> u32 {
-        todo!()
+        crate::warn_unimplemented!("GetRenderModelCount");
+        0
     }
     fn GetRenderModelName(&self, _: u32, _: *mut std::os::raw::c_char, _: u32) -> u32 {
         todo!()

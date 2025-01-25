@@ -93,7 +93,8 @@ impl vr::IVRApplications007_Interface for Applications {
         todo!()
     }
     fn IdentifyApplication(&self, _: u32, _: *const c_char) -> vr::EVRApplicationError {
-        todo!()
+        crate::warn_unimplemented!("IdentifyApplication");
+        vr::EVRApplicationError::None
     }
     fn CancelApplicationLaunch(&self, _: *const c_char) -> bool {
         todo!()
@@ -132,15 +133,19 @@ impl vr::IVRApplications007_Interface for Applications {
         todo!()
     }
     fn GetApplicationCount(&self) -> u32 {
-        todo!()
+        crate::warn_unimplemented!("GetApplicationCount");
+        0
     }
     fn IsApplicationInstalled(&self, _: *const c_char) -> bool {
-        todo!()
+        crate::warn_unimplemented!("IsApplicationInstalled");
+        false
     }
     fn RemoveApplicationManifest(&self, _: *const c_char) -> vr::EVRApplicationError {
-        todo!()
+        crate::warn_unimplemented!("RemoveApplicationManifest");
+        vr::EVRApplicationError::None
     }
     fn AddApplicationManifest(&self, _: *const c_char, _: bool) -> vr::EVRApplicationError {
-        todo!()
+        crate::warn_unimplemented!("AddApplicationManifest");
+        vr::EVRApplicationError::None
     }
 }
