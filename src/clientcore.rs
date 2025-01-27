@@ -126,9 +126,18 @@ impl vr::IVRClientCore002On003 for ClientCore {
 impl IVRClientCore003_Interface for ClientCore {
     fn Init(
         &self,
-        _application_type: vr::EVRApplicationType,
+        application_type: vr::EVRApplicationType,
         startup_info: *const c_char,
     ) -> vr::EVRInitError {
+        if !matches!(
+            application_type,
+            vr::EVRApplicationType::Scene // Standard apps
+            | vr::EVRApplicationType::Background // Proton
+        ) {
+            error!("Unsupported application type: {application_type:?}");
+            return vr::EVRInitError::Init_InvalidApplicationType;
+        }
+
         let manifest_path = (!startup_info.is_null())
             .then(|| {
                 let info = unsafe { CStr::from_ptr(startup_info) };
