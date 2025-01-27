@@ -151,7 +151,7 @@ extern "system" fn get_physical_device_queue_family_properties(
 
 pub(crate) mod xr {
     use openxr_sys as xr;
-    use std::ffi::c_char;
+    use std::ffi::{c_char, CStr};
 
     pub extern "system" fn get_vulkan_instance_extensions_k_h_r(
         _: xr::Instance,
@@ -160,11 +160,20 @@ pub(crate) mod xr {
         buffer_count_output: *mut u32,
         buffer: *mut c_char,
     ) -> xr::Result {
+        static EXTS: &CStr = c"VK_foo VK_bar";
+        static LEN: usize = EXTS.count_bytes() + 1;
+
         if !buffer_count_output.is_null() {
-            unsafe { *buffer_count_output = 1 };
+            unsafe { *buffer_count_output = LEN as u32 };
         }
-        if buffer_capacity_input >= 1 {
-            unsafe { *buffer = 0 };
+        if buffer_capacity_input >= LEN as u32 {
+            let buf =
+                unsafe { std::slice::from_raw_parts_mut(buffer, buffer_capacity_input as usize) };
+            let bytes = EXTS.to_bytes_with_nul();
+            let bytes = unsafe { std::slice::from_raw_parts(bytes.as_ptr() as _, bytes.len()) };
+            buf[..LEN].copy_from_slice(bytes);
+        } else if buffer_capacity_input > 0 {
+            return xr::Result::ERROR_SIZE_INSUFFICIENT;
         }
         xr::Result::SUCCESS
     }

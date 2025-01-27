@@ -11,6 +11,7 @@ use crate::{
 use log::{debug, info, trace};
 use openvr as vr;
 use openxr as xr;
+use std::ffi::c_char;
 use std::mem::offset_of;
 use std::sync::{
     atomic::{AtomicU32, Ordering},
@@ -111,6 +112,20 @@ impl Compositor {
 
         self.openxr.restart_session();
     }
+}
+
+fn fill_vk_extensions_buffer(extensions: String, buffer: *mut c_char, buffer_size: u32) -> u32 {
+    let bytes = unsafe {
+        std::slice::from_raw_parts(extensions.as_ptr() as *const c_char, extensions.len())
+    };
+
+    if !buffer.is_null() && buffer_size as usize > bytes.len() {
+        let buffer = unsafe { std::slice::from_raw_parts_mut(buffer, buffer_size as usize) };
+        buffer[0..bytes.len()].copy_from_slice(bytes);
+        buffer[bytes.len()] = 0;
+    }
+
+    bytes.len() as u32 + 1
 }
 
 impl openxr_data::Compositor for Compositor {
@@ -265,14 +280,7 @@ impl vr::IVRCompositor028_Interface for Compositor {
             .vulkan_legacy_device_extensions(self.openxr.system_id)
             .unwrap();
         log::debug!("required device extensions: {exts}");
-        let bytes = unsafe { &*(exts.as_bytes() as *const [u8] as *const [std::ffi::c_char]) };
-        if !buffer.is_null() && buffer_size > 0 {
-            let size = buffer_size as usize;
-            let ret_buf = unsafe { std::slice::from_raw_parts_mut(buffer, size) };
-            ret_buf[0..size - 1].copy_from_slice(&bytes[0..size - 1]);
-            ret_buf[size - 1] = 0;
-        }
-        exts.len() as u32 + 1
+        fill_vk_extensions_buffer(exts, buffer, buffer_size)
     }
 
     fn GetVulkanInstanceExtensionsRequired(
@@ -286,14 +294,7 @@ impl vr::IVRCompositor028_Interface for Compositor {
             .vulkan_legacy_instance_extensions(self.openxr.system_id)
             .unwrap();
         log::debug!("required instance extensions: {exts}");
-        let bytes = unsafe { &*(exts.as_bytes() as *const [u8] as *const [std::ffi::c_char]) };
-        if !buffer.is_null() && buffer_size > 0 {
-            let size = buffer_size as usize;
-            let ret_buf = unsafe { std::slice::from_raw_parts_mut(buffer, size) };
-            ret_buf[0..size - 1].copy_from_slice(&bytes[0..size - 1]);
-            ret_buf[size - 1] = 0;
-        }
-        exts.len() as u32 + 1
+        fill_vk_extensions_buffer(exts, buffer, buffer_size)
     }
 
     fn UnlockGLSharedTextureForAccess(&self, _glSharedTextureHandle: vr::glSharedTextureHandle_t) {
@@ -1029,6 +1030,7 @@ mod tests {
     use super::*;
     use crate::graphics_backends::{GraphicsBackend, VulkanData};
     use std::cell::Cell;
+    use std::ffi::CStr;
     use std::mem::MaybeUninit;
     use std::thread_local;
     use vr::EVRCompositorError::*;
@@ -1382,5 +1384,43 @@ mod tests {
             };
             assert!(ctrl.swapchain_data.is_some());
         }
+    }
+
+    #[test]
+    fn vulkan_extensions() {
+        let f = Fixture::new();
+
+        fn tst(func: impl Fn(*mut c_char, u32) -> u32, dbg: &str) {
+            // Normal flow
+            let size = func(std::ptr::null_mut(), 0);
+            let mut exts = vec![0; size as usize];
+            func(exts.as_mut_ptr(), exts.len() as u32);
+
+            let data = unsafe { CStr::from_ptr(exts.as_ptr()) };
+            assert_eq!(data, c"VK_foo VK_bar", "{dbg}");
+
+            // Oversized buffer
+            let mut exts = vec![0; size as usize * 2];
+            func(exts.as_mut_ptr(), exts.len() as u32);
+
+            let data = unsafe { CStr::from_ptr(exts.as_ptr()) };
+            assert_eq!(data, c"VK_foo VK_bar", "{dbg}");
+
+            // Undersized buffer - should not crash
+            let mut exts = vec![0];
+            func(exts.as_mut_ptr(), exts.len() as u32);
+        }
+
+        tst(
+            |buf, size| f.comp.GetVulkanInstanceExtensionsRequired(buf, size),
+            "instance exts",
+        );
+        tst(
+            |buf, size| {
+                f.comp
+                    .GetVulkanDeviceExtensionsRequired(std::ptr::null_mut(), buf, size)
+            },
+            "device exts",
+        );
     }
 }
