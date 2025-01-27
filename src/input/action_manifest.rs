@@ -240,7 +240,7 @@ fn create_action_set(
 
     trace!("Creating action set {xr_friendly_name} ({path:?}) (localized: {localized:?})");
     instance
-        .create_action_set(xr_friendly_name, localized.unwrap_or(&path), 0)
+        .create_action_set(xr_friendly_name, localized.unwrap_or(path), 0)
         .map_err(|e| {
             error!("Failed to create action set {xr_friendly_name}: {e}");
             vr::EVRInputError::InvalidParam

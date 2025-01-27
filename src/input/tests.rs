@@ -765,10 +765,10 @@ fn digital_action_initalize_on_failure() {
         ),
         vr::EVRInputError::None
     );
-    assert_eq!(state.bActive, false);
-    assert_eq!(state.bState, false);
+    assert!(!state.bActive);
+    assert!(!state.bState);
     assert_eq!(state.activeOrigin, 0);
-    assert_eq!(state.bChanged, false);
+    assert!(!state.bChanged);
     assert_eq!(state.fUpdateTime, 0.0);
 
     let mut state = bad_state;
@@ -783,10 +783,10 @@ fn digital_action_initalize_on_failure() {
         vr::EVRInputError::None
     );
 
-    assert_eq!(state.bActive, false);
-    assert_eq!(state.bState, false);
+    assert!(!state.bActive);
+    assert!(!state.bState);
     assert_eq!(state.activeOrigin, 0);
-    assert_eq!(state.bChanged, false);
+    assert!(!state.bChanged);
     assert_eq!(state.fUpdateTime, 0.0);
 }
 
@@ -808,7 +808,7 @@ fn analog_action_initialize_on_failure() {
     };
 
     let check_state = |state: vr::InputAnalogActionData_t, desc: &str| {
-        assert_eq!(state.bActive, false, "{desc}");
+        assert!(!state.bActive, "{desc}");
         assert_eq!(state.activeOrigin, 0, "{desc}");
         assert_eq!(state.x, 0.0, "{desc}");
         assert_eq!(state.deltaX, 0.0, "{desc}");
@@ -859,5 +859,5 @@ fn implicit_action_sets() {
     });
 
     let res = f.get_bool_state(boolact);
-    assert!(matches!(res, Ok(_)), "{res:?}");
+    assert!(res.is_ok(), "{res:?}");
 }
