@@ -1435,9 +1435,9 @@ extern "system" fn locate_views(
     session: xr::Session,
     _info: *const xr::ViewLocateInfo,
     state: *mut xr::ViewState,
-    _capacity: u32,
+    capacity: u32,
     output: *mut u32,
-    _views: *mut xr::View,
+    views: *mut xr::View,
 ) -> xr::Result {
     let _session = get_handle!(session);
     if !state.is_null() {
@@ -1452,9 +1452,24 @@ extern "system" fn locate_views(
 
     if !output.is_null() {
         unsafe {
-            output.write(0);
+            output.write(2);
         }
     }
+    if capacity > 0 {
+        if capacity < 2 {
+            return xr::Result::ERROR_SIZE_INSUFFICIENT;
+        }
+        let views = unsafe { std::slice::from_raw_parts_mut(views, capacity as usize) };
+        let view = xr::View {
+            ty: xr::View::TYPE,
+            next: std::ptr::null_mut(),
+            pose: xr::Posef::default(),
+            fov: xr::Fovf::default(),
+        };
+        views[0] = view;
+        views[1] = view;
+    }
+
     xr::Result::SUCCESS
 }
 
