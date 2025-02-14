@@ -925,6 +925,7 @@ impl<G: GraphicsBackend> FrameController<G> {
                     }
                 })
                 .or_else(|| {
+                    trace!("submitting null this frame");
                     self.submitting_null = true;
                     Some(Default::default())
                 })
@@ -999,6 +1000,7 @@ impl<G: GraphicsBackend> FrameController<G> {
 
         let mut proj_layer = None;
         if !proj_layer_views.is_empty() {
+            trace!("projection layer present");
             proj_layer = Some(
                 xr::CompositionLayerProjection::new()
                     .space(session_data.tracking_space())

@@ -54,7 +54,7 @@ impl OverlayMan {
             if !overlay.visible {
                 continue;
             }
-            let Some(data) = overlay.last_frame.take() else {
+            let Some(rect) = overlay.rect else {
                 continue;
             };
 
@@ -67,7 +67,7 @@ impl OverlayMan {
                     .unwrap_or(session.current_origin),
             );
 
-            trace!("overlay rect: {:#?}", data.rect);
+            trace!("overlay rect: {:#?}", rect);
             let layer = xr::CompositionLayerQuad::new()
                 .space(space)
                 .layer_flags(xr::CompositionLayerFlags::BLEND_TEXTURE_SOURCE_ALPHA)
@@ -76,7 +76,7 @@ impl OverlayMan {
                     xr::SwapchainSubImage::new()
                         .image_array_index(vr::EVREye::Left as u32)
                         .swapchain(swapchain)
-                        .image_rect(data.rect),
+                        .image_rect(rect),
                 )
                 .pose(
                     overlay
@@ -94,8 +94,7 @@ impl OverlayMan {
                 )
                 .size(xr::Extent2Df {
                     width: overlay.width,
-                    height: data.rect.extent.height as f32 * overlay.width
-                        / data.rect.extent.width as f32,
+                    height: rect.extent.height as f32 * overlay.width / rect.extent.width as f32,
                 });
 
             fn lifetime_extend<'a, 'b: 'a, G: xr::Graphics>(
@@ -145,11 +144,7 @@ struct Overlay {
     bounds: vr::VRTextureBounds_t,
     transform: Option<(vr::ETrackingUniverseOrigin, vr::HmdMatrix34_t)>,
     compositor: Option<SupportedBackend>,
-    last_frame: Option<FrameData>,
-}
-
-struct FrameData {
-    rect: xr::Rect2Di,
+    rect: Option<xr::Rect2Di>,
 }
 
 impl Overlay {
@@ -168,7 +163,7 @@ impl Overlay {
             },
             transform: None,
             compositor: None,
-            last_frame: None,
+            rect: None,
         }
     }
 
@@ -270,11 +265,9 @@ impl Overlay {
             texture,
         ));
         self.compositor = Some(backend);
-        self.last_frame = Some(FrameData {
-            rect: xr::Rect2Di {
-                extent,
-                offset: xr::Offset2Di::default(),
-            },
+        self.rect = Some(xr::Rect2Di {
+            extent,
+            offset: xr::Offset2Di::default(),
         });
     }
 }
