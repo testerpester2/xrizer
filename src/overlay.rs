@@ -1,7 +1,7 @@
 use crate::{
     compositor::{is_usable_swapchain, Compositor},
     graphics_backends::{supported_apis_enum, GraphicsBackend, SupportedBackend},
-    openxr_data::{GraphicalSession, OpenXrData, SessionData},
+    openxr_data::{GraphicalSession, OpenXrData, Session, SessionData},
 };
 use log::{debug, trace};
 use openvr as vr;
@@ -125,6 +125,7 @@ new_key_type!(
 pub(crate) struct SwapchainData<G: xr::Graphics> {
     swapchain: xr::Swapchain<G>,
     info: xr::SwapchainCreateInfo<G>,
+    initial_format: G::Format,
 }
 
 pub(crate) type SwapchainMap<G> = SecondaryMap<OverlayKey, SwapchainData<G>>;
@@ -205,8 +206,7 @@ impl Overlay {
         where
             for<'a> &'a mut SwapchainMap<G::Api>:
                 TryFrom<&'a mut AnySwapchainMap, Error: std::fmt::Display>,
-            for<'a> &'a GraphicalSession:
-                TryInto<&'a xr::Session<G::Api>, Error: std::fmt::Display>,
+            for<'a> &'a GraphicalSession: TryInto<&'a Session<G::Api>, Error: std::fmt::Display>,
             <G::Api as xr::Graphics>::Format: Eq,
         {
             let map: &mut SwapchainMap<G::Api> = map.try_into().unwrap_or_else(|e| {
@@ -219,24 +219,30 @@ impl Overlay {
             let tex_swapchain_info =
                 backend.swapchain_info_for_texture(b_texture, overlay.bounds, texture.eColorSpace);
             let mut create_swapchain = || {
-                let info = backend.swapchain_info_for_texture(
+                let mut info = backend.swapchain_info_for_texture(
                     b_texture,
                     overlay.bounds,
                     texture.eColorSpace,
                 );
+                let initial_format = info.format;
+                session_data.check_format::<G>(&mut info);
                 let swapchain = session_data.create_swapchain(&info).unwrap();
                 let images = swapchain
                     .enumerate_images()
                     .expect("Couldn't enumerate swapchain images");
-                backend.store_swapchain_images(images);
-                SwapchainData { swapchain, info }
+                backend.store_swapchain_images(images, info.format);
+                SwapchainData {
+                    swapchain,
+                    info,
+                    initial_format,
+                }
             };
             let swapchain = {
                 let data = map
                     .entry(key)
                     .unwrap()
                     .or_insert_with(&mut create_swapchain);
-                if !is_usable_swapchain(&data.info, &tex_swapchain_info) {
+                if !is_usable_swapchain(&data.info, data.initial_format, &tex_swapchain_info) {
                     *data = create_swapchain();
                 }
                 &mut data.swapchain
