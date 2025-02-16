@@ -5,6 +5,7 @@ use glutin_glx_sys::{
     Success,
 };
 use libc::{dlerror, dlopen, dlsym};
+use log::warn;
 use openvr as vr;
 use openxr as xr;
 use std::ffi::{c_char, c_void, CStr, CString};
@@ -72,18 +73,29 @@ impl GlData {
             let attrs = [glx::FBCONFIG_ID, config_id as _, glx::NONE];
             let mut items = 0;
             let cfgs = glx.ChooseFBConfig(x_display, screen, attrs.as_ptr() as _, &mut items);
-            assert!(!cfgs.is_null());
-            assert_ne!(items, 0);
-            #[allow(unused_unsafe)]
-            let glx_fb_config = unsafe { std::slice::from_raw_parts(cfgs, items as usize) }[0];
-
-            let visual = glx.GetVisualFromFBConfig(x_display, glx_fb_config);
-            assert!(!visual.is_null());
+            let fbconfig = (!cfgs.is_null()).then(|| {
+                assert_ne!(items, 0);
+                std::slice::from_raw_parts(cfgs, items as usize)[0].cast_mut()
+            });
+            let visualid = fbconfig
+                .map(|cfg| {
+                    let visual = glx.GetVisualFromFBConfig(x_display, cfg);
+                    if visual.is_null() {
+                        warn!("No visual available from fbconfig.");
+                        0
+                    } else {
+                        (&raw const (*visual).visualid).read() as u32
+                    }
+                })
+                .unwrap_or(0);
 
             xr::opengl::SessionCreateInfo::Xlib {
                 x_display: x_display.cast(),
-                visualid: (*visual).visualid as _,
-                glx_fb_config: glx_fb_config.cast_mut(),
+                glx_fb_config: fbconfig.unwrap_or_else(|| {
+                    warn!("No fbconfig found.");
+                    std::ptr::null_mut()
+                }),
+                visualid,
                 glx_drawable,
                 glx_context: glx_context.cast_mut(),
             }
