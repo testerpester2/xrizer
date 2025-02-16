@@ -15,11 +15,14 @@ use serde::{
     Deserialize,
 };
 use slotmap::SecondaryMap;
-use std::cell::{LazyCell, RefCell};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::RwLock;
+use std::{
+    cell::{LazyCell, RefCell},
+    env::current_dir,
+};
 
 impl<C: openxr_data::Compositor> Input<C> {
     pub(super) fn load_action_manifest(
@@ -759,7 +762,17 @@ impl<C: openxr_data::Compositor> Input<C> {
         }) = it.next()
         {
             let load_bindings = || {
-                let bindings_path = parent_path.join(binding_url);
+                let custom_path =
+                    if let Ok(custom_dir) = std::env::var("XRIZER_CUSTOM_BINDINGS_DIR") {
+                        PathBuf::from(custom_dir)
+                    } else {
+                        current_dir().unwrap().join("xrizer")
+                    }
+                    .join(format!("{controller_type:?}.json").to_lowercase());
+                let bindings_path = match custom_path.exists() {
+                    true => custom_path,
+                    false => parent_path.join(binding_url),
+                };
                 debug!(
                     "Reading bindings for {controller_type:?} (at {})",
                     bindings_path.display()
