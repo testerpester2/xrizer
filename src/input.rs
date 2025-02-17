@@ -980,17 +980,17 @@ impl<C: openxr_data::Compositor> Input<C> {
 
     fn get_hmd_pose(&self, origin: Option<vr::ETrackingUniverseOrigin>) -> vr::TrackedDevicePose_t {
         tracy_span!();
+        let mut spaces = self.cached_poses.lock().unwrap();
         let data = self.openxr.session_data.get();
-        let (hmd_location, hmd_velocity) = {
-            data.view_space
-                .relate(
-                    data.get_space_for_origin(origin.unwrap_or(data.current_origin)),
-                    self.openxr.display_time.get(),
-                )
-                .unwrap()
-        };
-
-        space_relation_to_openvr_pose(hmd_location, hmd_velocity)
+        spaces
+            .get_pose_impl(
+                &self.openxr,
+                &data,
+                self.openxr.display_time.get(),
+                None,
+                origin.unwrap_or(data.current_origin),
+            )
+            .unwrap()
     }
 
     /// Returns None if legacy actions haven't been set up yet.
@@ -1006,7 +1006,7 @@ impl<C: openxr_data::Compositor> Input<C> {
             &self.openxr,
             &data,
             self.openxr.display_time.get(),
-            hand,
+            Some(hand),
             origin.unwrap_or(data.current_origin),
         )
     }
@@ -1212,6 +1212,7 @@ struct CachedSpaces {
 
 #[derive(Default)]
 struct CachedPoses {
+    head: Option<vr::TrackedDevicePose_t>,
     left: Option<vr::TrackedDevicePose_t>,
     right: Option<vr::TrackedDevicePose_t>,
 }
@@ -1222,7 +1223,7 @@ impl CachedSpaces {
         xr_data: &OpenXrData<impl openxr_data::Compositor>,
         session_data: &SessionData,
         display_time: xr::Time,
-        hand: Hand,
+        hand: Option<Hand>,
         origin: vr::ETrackingUniverseOrigin,
     ) -> Option<vr::TrackedDevicePose_t> {
         tracy_span!();
@@ -1233,28 +1234,36 @@ impl CachedSpaces {
         };
 
         let pose = match hand {
-            Hand::Left => &mut space.left,
-            Hand::Right => &mut space.right,
+            None => &mut space.head,
+            Some(Hand::Left) => &mut space.left,
+            Some(Hand::Right) => &mut space.right,
         };
 
         if let Some(pose) = pose {
             return Some(*pose);
         }
 
-        let legacy = session_data.input_data.legacy_actions.get()?;
-        let spaces = match hand {
-            Hand::Left => &legacy.left_spaces,
-            Hand::Right => &legacy.right_spaces,
-        };
+        let (loc, velo) = if let Some(hand) = hand {
+            let legacy = session_data.input_data.legacy_actions.get()?;
+            let spaces = match hand {
+                Hand::Left => &legacy.left_spaces,
+                Hand::Right => &legacy.right_spaces,
+            };
 
-        let (loc, velo) = if let Some(raw) =
-            spaces.try_get_or_init_raw(xr_data, session_data, &legacy.actions, display_time)
-        {
-            raw.relate(session_data.get_space_for_origin(origin), display_time)
-                .unwrap()
+            if let Some(raw) =
+                spaces.try_get_or_init_raw(xr_data, session_data, &legacy.actions, display_time)
+            {
+                raw.relate(session_data.get_space_for_origin(origin), display_time)
+                    .unwrap()
+            } else {
+                trace!("failed to get raw space, making empty pose");
+                (xr::SpaceLocation::default(), xr::SpaceVelocity::default())
+            }
         } else {
-            trace!("failed to get raw space, making empty pose");
-            (xr::SpaceLocation::default(), xr::SpaceVelocity::default())
+            session_data
+                .view_space
+                .relate(session_data.get_space_for_origin(origin), display_time)
+                .unwrap()
         };
 
         let ret = space_relation_to_openvr_pose(loc, velo);
