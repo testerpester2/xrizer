@@ -24,7 +24,7 @@ pub struct CompositorSessionData(Mutex<Option<DynFrameController>>);
 
 #[derive(macros::InterfaceImpl)]
 #[interface = "IVRCompositor"]
-#[versions(028, 027, 026, 022, 020, 019)]
+#[versions(028, 027, 026, 022, 021, 020, 019)]
 pub struct Compositor {
     vtables: Vtables,
     openxr: Arc<OpenXrData<Self>>,
@@ -415,7 +415,8 @@ impl vr::IVRCompositor028_Interface for Compositor {
         todo!()
     }
     fn GetFrameTimeRemaining(&self) -> f32 {
-        todo!()
+        crate::warn_unimplemented!("GetFrameTimeRemaining");
+        0.0
     }
     fn GetFrameTimings(&self, _pTiming: *mut vr::Compositor_FrameTiming, _nFrames: u32) -> u32 {
         todo!()
@@ -673,6 +674,18 @@ impl vr::IVRCompositor028_Interface for Compositor {
 impl vr::IVRCompositor026On027 for Compositor {
     fn FadeGrid(&self, seconds: f32, fade_in: bool) {
         <Self as vr::IVRCompositor028_Interface>::FadeGrid(self, seconds, fade_in);
+    }
+}
+
+impl vr::IVRCompositor021On022 for Compositor {
+    fn SetExplicitTimingMode(&self, explicit: bool) {
+        let mode = if explicit {
+            vr::EVRCompositorTimingMode::Explicit_ApplicationPerformsPostPresentHandoff
+        } else {
+            vr::EVRCompositorTimingMode::Implicit
+        };
+
+        <Self as vr::IVRCompositor028_Interface>::SetExplicitTimingMode(self, mode);
     }
 }
 

@@ -69,7 +69,7 @@ impl ViewCache {
 
 #[derive(macros::InterfaceImpl)]
 #[interface = "IVRSystem"]
-#[versions(022, 021, 020, 019, 016, 015)]
+#[versions(022, 021, 020, 019, 017, 016, 015)]
 pub struct System {
     openxr: Arc<RealOpenXrData>, // We don't need to test session restarting.
     input: Injected<Input<crate::compositor::Compositor>>,
@@ -747,7 +747,7 @@ impl vr::IVRSystem019On020 for System {
     }
 }
 
-impl vr::IVRSystem016On019 for System {
+impl vr::IVRSystem017On019 for System {
     fn IsInputFocusCapturedByAnotherProcess(&self) -> bool {
         false
     }
@@ -755,6 +755,9 @@ impl vr::IVRSystem016On019 for System {
     fn CaptureInputFocus(&self) -> bool {
         true
     }
+}
+
+impl vr::IVRSystem016On017 for System {
     fn GetOutputDevice(&self, _device: *mut u64, _texture_type: vr::ETextureType) {
         // TODO: figure out what to pass for the instance...
         todo!()
