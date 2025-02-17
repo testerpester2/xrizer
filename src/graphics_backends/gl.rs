@@ -16,6 +16,9 @@ static GLX: LazyLock<Library> = LazyLock::new(|| Library::new(c"libGLX.so.0"));
 pub struct GlData {
     session_data: Arc<SessionCreateInfo>,
     images: Vec<u32>,
+    format: u32,
+    read_fbo: u32,
+    draw_fbo: u32,
 }
 
 #[derive(Deref)]
@@ -101,9 +104,17 @@ impl GlData {
             }
         };
 
+        let mut fbos = [0; 2];
+        unsafe {
+            gl::GenFramebuffers(fbos.len() as i32, fbos.as_mut_ptr());
+        }
+
         GlData {
             session_data: Arc::new(SessionCreateInfo(session_info)),
             images: Default::default(),
+            format: 0,
+            read_fbo: fbos[0],
+            draw_fbo: fbos[1],
         }
     }
 }
@@ -132,9 +143,10 @@ impl GraphicsBackend for GlData {
     fn store_swapchain_images(
         &mut self,
         images: Vec<<Self::Api as xr::Graphics>::SwapchainImage>,
-        _format: u32,
+        format: u32,
     ) {
         self.images = images;
+        self.format = format;
     }
 
     #[inline]
@@ -177,24 +189,68 @@ impl GraphicsBackend for GlData {
 
         let xr::Rect2Di { extent, offset } = texture_rect_from_bounds(texture, bounds);
 
+        let mut fmt = 0;
         unsafe {
-            gl::CopyImageSubData(
-                texture,
-                gl::TEXTURE_2D,
-                0, // level
-                offset.x,
-                offset.y,
-                0, // z
-                swapchain_texture,
-                gl::TEXTURE_2D_ARRAY,
-                0, // x
-                0, // y
-                0, // z
-                eye as i32,
-                extent.width,
-                extent.height,
-                1,
-            );
+            gl::BindTexture(gl::TEXTURE_2D, texture);
+            gl::GetTexLevelParameteriv(gl::TEXTURE_2D, 0, gl::TEXTURE_INTERNAL_FORMAT, &mut fmt);
+            gl::BindTexture(gl::TEXTURE_2D, 0);
+        }
+
+        if self.format == fmt as u32 {
+            unsafe {
+                gl::CopyImageSubData(
+                    texture,
+                    gl::TEXTURE_2D,
+                    0, // level
+                    offset.x,
+                    offset.y,
+                    0, // z
+                    swapchain_texture,
+                    gl::TEXTURE_2D_ARRAY,
+                    0, // x
+                    0, // y
+                    0, // z
+                    eye as i32,
+                    extent.width,
+                    extent.height,
+                    1,
+                );
+            }
+        } else {
+            unsafe {
+                gl::BindFramebuffer(gl::READ_FRAMEBUFFER, self.read_fbo);
+                gl::FramebufferTexture2D(
+                    gl::READ_FRAMEBUFFER,
+                    gl::COLOR_ATTACHMENT0,
+                    gl::TEXTURE_2D,
+                    texture,
+                    0,
+                );
+                gl::BindFramebuffer(gl::DRAW_FRAMEBUFFER, self.draw_fbo);
+                gl::FramebufferTextureLayer(
+                    gl::DRAW_FRAMEBUFFER,
+                    gl::COLOR_ATTACHMENT0,
+                    swapchain_texture,
+                    0,
+                    eye as i32,
+                );
+
+                gl::BlitFramebuffer(
+                    offset.x,
+                    offset.y,
+                    offset.x + extent.width,
+                    offset.y + extent.height,
+                    0,
+                    0,
+                    extent.width,
+                    extent.height,
+                    gl::COLOR_BUFFER_BIT,
+                    gl::NEAREST,
+                );
+
+                gl::BindFramebuffer(gl::READ_FRAMEBUFFER, 0);
+                gl::BindFramebuffer(gl::DRAW_FRAMEBUFFER, 0);
+            }
         }
 
         extent
