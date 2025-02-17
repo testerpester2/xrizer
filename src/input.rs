@@ -14,7 +14,7 @@ use crate::{
     tracy_span, AtomicF32,
 };
 use custom_bindings::{BoolActionData, FloatActionData};
-use legacy::LegacyActionData;
+use legacy::{setup_legacy_bindings, LegacyActionData};
 use log::{debug, info, trace, warn};
 use openvr::{self as vr, space_relation_to_openvr_pose};
 use openxr as xr;
@@ -124,7 +124,6 @@ impl InputSessionData {
         self.loaded_actions.get().map(|l| l.read().unwrap())
     }
 }
-
 enum ActionData {
     Bool(BoolActionData),
     Vector1(FloatActionData),
@@ -1011,70 +1010,6 @@ impl<C: openxr_data::Compositor> Input<C> {
         )
     }
 
-    pub fn get_legacy_controller_state(
-        &self,
-        device_index: vr::TrackedDeviceIndex_t,
-        state: *mut vr::VRControllerState_t,
-        state_size: u32,
-    ) -> bool {
-        if state_size as usize != std::mem::size_of::<vr::VRControllerState_t>() {
-            warn!(
-                "Got an unexpected size for VRControllerState_t (expected {}, got {state_size})",
-                std::mem::size_of::<vr::VRControllerState_t>()
-            );
-            return false;
-        }
-
-        let data = self.openxr.session_data.get();
-        let Some(legacy) = data.input_data.legacy_actions.get() else {
-            debug!("tried getting controller state, but legacy actions aren't ready");
-            return false;
-        };
-        let actions = &legacy.actions;
-
-        let Ok(hand) = Hand::try_from(device_index) else {
-            debug!("requested controller state for invalid device index: {device_index}");
-            return false;
-        };
-
-        let hand_path = match hand {
-            Hand::Left => self.openxr.left_hand.subaction_path,
-            Hand::Right => self.openxr.right_hand.subaction_path,
-        };
-
-        let data = self.openxr.session_data.get();
-
-        // Adapted from openvr.h
-        fn button_mask_from_id(id: vr::EVRButtonId) -> u64 {
-            1_u64 << (id as u32)
-        }
-
-        let state = unsafe { state.as_mut() }.unwrap();
-        *state = Default::default();
-
-        state.unPacketNum = self.legacy_packet_num.load(Ordering::Relaxed);
-
-        let mut read_button = |id, action: &xr::Action<bool>| {
-            let val = action
-                .state(&data.session, hand_path)
-                .unwrap()
-                .current_state as u64
-                * u64::MAX;
-            state.ulButtonPressed |= button_mask_from_id(id) & val;
-        };
-
-        read_button(vr::EVRButtonId::SteamVR_Trigger, &actions.trigger_click);
-        read_button(vr::EVRButtonId::ApplicationMenu, &actions.app_menu);
-
-        let t = actions.trigger.state(&data.session, hand_path).unwrap();
-        state.rAxis[1] = vr::VRControllerAxis_t {
-            x: t.current_state,
-            y: 0.0,
-        };
-
-        true
-    }
-
     pub fn frame_start_update(&self) {
         tracy_span!();
         std::mem::take(&mut *self.cached_poses.lock().unwrap());
@@ -1269,38 +1204,6 @@ impl CachedSpaces {
         let ret = space_relation_to_openvr_pose(loc, velo);
         Some(*pose.insert(ret))
     }
-}
-
-fn setup_legacy_bindings(
-    instance: &xr::Instance,
-    session: &xr::Session<xr::AnyGraphics>,
-    legacy: &LegacyActionData,
-) {
-    debug!("setting up legacy bindings");
-
-    let actions = &legacy.actions;
-    for profile in Profiles::get().profiles_iter() {
-        const fn constrain<F>(f: F) -> F
-        where
-            F: for<'a> Fn(&'a str) -> xr::Path,
-        {
-            f
-        }
-        let stp = constrain(|s| instance.string_to_path(s).unwrap());
-        let bindings = profile.legacy_bindings(&stp);
-        let profile = stp(profile.profile_path());
-        instance
-            .suggest_interaction_profile_bindings(
-                profile,
-                &bindings.binding_iter(actions).collect::<Vec<_>>(),
-            )
-            .unwrap();
-    }
-
-    session.attach_action_sets(&[&legacy.set]).unwrap();
-    session
-        .sync_actions(&[xr::ActiveActionSet::new(&legacy.set)])
-        .unwrap();
 }
 
 struct LoadedActions {
