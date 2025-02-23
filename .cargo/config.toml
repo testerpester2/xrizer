@@ -4,3 +4,6 @@ MIRIFLAGS = "-Zmiri-disable-isolation -Zmiri-permissive-provenance -Zmiri-ignore
 
 [alias]
 xbuild = "run --package xbuild --quiet --"
+
+[profile.release]
+strip = "debuginfo"
