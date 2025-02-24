@@ -345,14 +345,11 @@ impl vr::IVRSystem022_Interface for System {
     }
     fn PollNextEventWithPose(
         &self,
-        _: vr::ETrackingUniverseOrigin,
-        _: *mut vr::VREvent_t,
-        _: u32,
-        _: *mut vr::TrackedDevicePose_t,
+        origin: vr::ETrackingUniverseOrigin,
+        event: *mut vr::VREvent_t,
+        _size: u32,
+        pose: *mut vr::TrackedDevicePose_t,
     ) -> bool {
-        false
-    }
-    fn PollNextEvent(&self, event: *mut vr::VREvent_t, _size: u32) -> bool {
         use std::ptr::addr_of_mut as ptr;
         let (left_hand_connected, right_hand_connected) = (
             self.openxr.left_hand.connected(),
@@ -374,6 +371,17 @@ impl vr::IVRSystem022_Interface for System {
 
                 ptr!((*event).trackedDeviceIndex).write(tracked_device);
                 ptr!((*event).eventAgeSeconds).write(0.0);
+                if !pose.is_null() {
+                    pose.write(
+                        self.input
+                            .force(|_| Input::new(self.openxr.clone()))
+                            .get_controller_pose(
+                                Hand::try_from(tracked_device).unwrap(),
+                                Some(origin),
+                            )
+                            .unwrap_or_default(),
+                    );
+                }
             }
         };
 
@@ -402,6 +410,15 @@ impl vr::IVRSystem022_Interface for System {
         } else {
             false
         }
+    }
+
+    fn PollNextEvent(&self, event: *mut vr::VREvent_t, size: u32) -> bool {
+        self.PollNextEventWithPose(
+            vr::ETrackingUniverseOrigin::Seated,
+            event,
+            size,
+            std::ptr::null_mut(),
+        )
     }
 
     fn GetPropErrorNameFromEnum(
