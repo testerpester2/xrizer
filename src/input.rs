@@ -49,6 +49,7 @@ pub struct Input<C: openxr_data::Compositor> {
     cached_poses: Mutex<CachedSpaces>,
     legacy_packet_num: AtomicU32,
     skeletal_tracking_level: RwLock<vr::EVRSkeletalTrackingLevel>,
+    profile_map: HashMap<xr::Path, &'static profiles::ProfileProperties>,
 }
 
 #[derive(Debug)]
@@ -84,6 +85,19 @@ impl<C: openxr_data::Compositor> Input<C> {
         let mut map = SlotMap::with_key();
         let left_hand_key = map.insert(c"/user/hand/left".into());
         let right_hand_key = map.insert(c"/user/hand/right".into());
+        let profile_map = Profiles::get()
+            .profiles_iter()
+            .map(|profile| {
+                (
+                    openxr
+                        .instance
+                        .string_to_path(profile.profile_path())
+                        .unwrap(),
+                    profile.properties(),
+                )
+            })
+            .collect();
+
         Self {
             openxr,
             vtables: Default::default(),
@@ -96,6 +110,7 @@ impl<C: openxr_data::Compositor> Input<C> {
             cached_poses: Mutex::default(),
             legacy_packet_num: 0.into(),
             skeletal_tracking_level: RwLock::new(vr::EVRSkeletalTrackingLevel::Estimated),
+            profile_map,
         }
     }
 
@@ -1073,53 +1088,72 @@ impl<C: openxr_data::Compositor> Input<C> {
         }
     }
 
+    fn get_profile_data(&self, hand: Hand) -> Option<&profiles::ProfileProperties> {
+        let hand = match hand {
+            Hand::Left => &self.openxr.left_hand,
+            Hand::Right => &self.openxr.right_hand,
+        };
+        let profile = hand.profile_path.load();
+        self.profile_map.get(&profile).map(|v| &**v)
+    }
+
     pub fn get_controller_string_tracked_property(
         &self,
         hand: Hand,
         property: vr::ETrackedDeviceProperty,
     ) -> Option<&'static CStr> {
-        static PROFILE_MAP: OnceLock<HashMap<xr::Path, &'static profiles::ProfileProperties>> =
-            OnceLock::new();
-        let get_profile_data = || {
-            let map = PROFILE_MAP.get_or_init(|| {
-                let instance = &self.openxr.instance;
-                Profiles::get()
-                    .profiles_iter()
-                    .map(|profile| {
-                        (
-                            instance.string_to_path(profile.profile_path()).unwrap(),
-                            profile.properties(),
-                        )
-                    })
-                    .collect()
-            });
-            let hand = match hand {
-                Hand::Left => &self.openxr.left_hand,
-                Hand::Right => &self.openxr.right_hand,
-            };
-            let profile = hand.profile_path.load();
-            map.get(&profile)
-        };
+        self.get_profile_data(hand).and_then(|data| {
+            match property {
+                // Audica likes to apply controller specific tweaks via this property
+                vr::ETrackedDeviceProperty::ControllerType_String => {
+                    Some(data.openvr_controller_type)
+                }
+                // I Expect You To Die 3 identifies controllers with this property -
+                // why it couldn't just use ControllerType instead is beyond me...
+                vr::ETrackedDeviceProperty::ModelNumber_String => Some(data.model),
+                // Resonite won't recognize controllers without this
+                vr::ETrackedDeviceProperty::RenderModelName_String => {
+                    Some(*data.render_model_name.get(hand))
+                }
+                // Required for controllers to be acknowledged in I Expect You To Die 3
+                vr::ETrackedDeviceProperty::SerialNumber_String
+                | vr::ETrackedDeviceProperty::ManufacturerName_String => Some(c"<unknown>"),
+                _ => None,
+            }
+        })
+    }
 
-        match property {
-            // Audica likes to apply controller specific tweaks via this property
-            vr::ETrackedDeviceProperty::ControllerType_String => {
-                get_profile_data().map(|data| data.openvr_controller_type)
+    pub fn get_controller_int_tracked_property(
+        &self,
+        hand: Hand,
+        property: vr::ETrackedDeviceProperty,
+    ) -> Option<i32> {
+        self.get_profile_data(hand).and_then(|data| match property {
+            vr::ETrackedDeviceProperty::Axis0Type_Int32 => {
+                if data.has_joystick {
+                    Some(vr::EVRControllerAxisType::Joystick as _)
+                } else if data.has_trackpad {
+                    Some(vr::EVRControllerAxisType::TrackPad as _)
+                } else {
+                    Some(vr::EVRControllerAxisType::None as _)
+                }
             }
-            // I Expect You To Die 3 identifies controllers with this property -
-            // why it couldn't just use ControllerType instead is beyond me...
-            vr::ETrackedDeviceProperty::ModelNumber_String => {
-                get_profile_data().map(|data| data.model)
+            vr::ETrackedDeviceProperty::Axis1Type_Int32 => {
+                Some(vr::EVRControllerAxisType::Trigger as _)
             }
-            // Resonite won't recognize controllers without this
-            vr::ETrackedDeviceProperty::RenderModelName_String => {
-                get_profile_data().map(|data| *data.render_model_name.get(hand))
+            vr::ETrackedDeviceProperty::Axis2Type_Int32 => {
+                if data.has_joystick && data.has_trackpad {
+                    Some(vr::EVRControllerAxisType::TrackPad as _)
+                } else {
+                    Some(vr::EVRControllerAxisType::None as _)
+                }
             }
-            // Required for controllers to be acknowledged in I Expect You To Die 3
-            vr::ETrackedDeviceProperty::SerialNumber_String
-            | vr::ETrackedDeviceProperty::ManufacturerName_String => Some(c"<unknown>"),
+            vr::ETrackedDeviceProperty::Axis3Type_Int32
+            | vr::ETrackedDeviceProperty::Axis4Type_Int32 => {
+                Some(vr::EVRControllerAxisType::None as _)
+            }
             _ => None,
-        }
+        })
     }
 
     pub fn post_session_restart(&self, data: &SessionData) {

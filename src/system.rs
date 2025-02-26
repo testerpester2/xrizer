@@ -539,13 +539,13 @@ impl vr::IVRSystem022_Interface for System {
             }
         }
 
+        if let Some(err) = unsafe { err.as_mut() } {
+            *err = vr::ETrackedPropertyError::Success;
+        }
         match device_index {
-            x if Hand::try_from(x).is_ok() => match prop {
-                vr::ETrackedDeviceProperty::Axis1Type_Int32 => {
-                    Some(vr::EVRControllerAxisType::Trigger as _)
-                }
-                _ => None,
-            },
+            x if Hand::try_from(x).is_ok() => self.input.get().and_then(|input| {
+                input.get_controller_int_tracked_property(Hand::try_from(x).unwrap(), prop)
+            }),
             _ => None,
         }
         .unwrap_or_else(|| {

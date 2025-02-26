@@ -9,6 +9,8 @@ impl InteractionProfile for ViveWands {
             model: c"vive_controller",
             openvr_controller_type: c"Vive. Controller MV",
             render_model_name: Property::BothHands(c"vr_controller_vive_1_5"),
+            has_joystick: false,
+            has_trackpad: true,
         }
     }
     fn profile_path(&self) -> &'static str {

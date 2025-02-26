@@ -17,6 +17,8 @@ impl InteractionProfile for Knuckles {
                 left: c"valve_controller_knu_1_0_left",
                 right: c"valve_controller_knu_1_0_right",
             },
+            has_joystick: true,
+            has_trackpad: true,
         }
     }
     fn translate_map(&self) -> &'static [PathTranslation] {

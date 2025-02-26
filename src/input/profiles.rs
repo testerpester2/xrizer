@@ -52,6 +52,8 @@ pub struct ProfileProperties {
     /// Corresponds to RenderModelName_String
     /// Can be found in SteamVR under resources/rendermodels (some are in driver subdirs)
     pub render_model_name: Property<&'static CStr>,
+    pub has_joystick: bool,
+    pub has_trackpad: bool,
 }
 
 pub(super) struct PathTranslation {

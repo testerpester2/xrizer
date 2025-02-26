@@ -9,6 +9,8 @@ impl InteractionProfile for SimpleController {
             model: c"generic",
             openvr_controller_type: c"<unknown>",
             render_model_name: Property::BothHands(c"generic_controller"),
+            has_joystick: false,
+            has_trackpad: false,
         }
     }
     fn profile_path(&self) -> &'static str {

@@ -11,6 +11,8 @@ impl InteractionProfile for Touch {
                 left: c"oculus_quest_controller_left",
                 right: c"oculus_quest_controller_right",
             },
+            has_joystick: true,
+            has_trackpad: false,
         }
     }
     fn profile_path(&self) -> &'static str {
