@@ -1,19 +1,15 @@
-use super::{InteractionProfile, PathTranslation, StringToPath};
+use super::{InteractionProfile, PathTranslation, ProfileProperties, Property, StringToPath};
 use crate::input::legacy::LegacyBindings;
-use crate::openxr_data::Hand;
-use std::ffi::CStr;
 
 pub struct SimpleController;
 
 impl InteractionProfile for SimpleController {
-    fn openvr_controller_type(&self) -> &'static CStr {
-        c"generic" // meaningless really
-    }
-    fn model(&self) -> &'static CStr {
-        c"<unknown>"
-    }
-    fn render_model_name(&self, _: Hand) -> &'static CStr {
-        c"generic_controller"
+    fn properties(&self) -> &'static ProfileProperties {
+        &ProfileProperties {
+            model: c"generic",
+            openvr_controller_type: c"<unknown>",
+            render_model_name: Property::BothHands(c"generic_controller"),
+        }
     }
     fn profile_path(&self) -> &'static str {
         "/interaction_profiles/khr/simple_controller"

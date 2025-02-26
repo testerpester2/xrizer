@@ -15,15 +15,7 @@ use vive_controller::ViveWands;
 #[allow(private_interfaces)]
 pub trait InteractionProfile: Sync + Send {
     fn profile_path(&self) -> &'static str;
-    /// Corresponds to Prop_ModelNumber_String
-    /// Can be pulled from a SteamVR System Report
-    fn model(&self) -> &'static CStr;
-    /// Corresponds to Prop_ControllerType_String
-    /// Can be pulled from a SteamVR System Report
-    fn openvr_controller_type(&self) -> &'static CStr;
-    /// Corresponds to RenderModelName_String
-    /// Can be found in SteamVR under resources/rendermodels (some are in driver subdirs)
-    fn render_model_name(&self, _: Hand) -> &'static CStr;
+    fn properties(&self) -> &'static ProfileProperties;
     fn translate_map(&self) -> &'static [PathTranslation];
 
     fn legal_paths(&self) -> Box<[String]>;
@@ -31,6 +23,35 @@ pub trait InteractionProfile: Sync + Send {
     fn offset_grip_pose(&self, pose: xr::Posef) -> xr::Posef {
         pose
     }
+}
+
+pub enum Property<T> {
+    BothHands(T),
+    PerHand { left: T, right: T },
+}
+
+impl<T> Property<T> {
+    pub fn get(&self, hand: Hand) -> &T {
+        match self {
+            Self::BothHands(property) => property,
+            Self::PerHand { left, right } => match hand {
+                Hand::Left => left,
+                Hand::Right => right,
+            },
+        }
+    }
+}
+
+pub struct ProfileProperties {
+    /// Corresponds to Prop_ModelNumber_String
+    /// Can be pulled from a SteamVR System Report
+    pub model: &'static CStr,
+    /// Corresponds to Prop_ControllerType_String
+    /// Can be pulled from a SteamVR System Report
+    pub openvr_controller_type: &'static CStr,
+    /// Corresponds to RenderModelName_String
+    /// Can be found in SteamVR under resources/rendermodels (some are in driver subdirs)
+    pub render_model_name: Property<&'static CStr>,
 }
 
 pub(super) struct PathTranslation {

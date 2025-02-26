@@ -1078,12 +1078,8 @@ impl<C: openxr_data::Compositor> Input<C> {
         hand: Hand,
         property: vr::ETrackedDeviceProperty,
     ) -> Option<&'static CStr> {
-        struct ProfileData {
-            controller_type: &'static CStr,
-            model_number: &'static CStr,
-            render_model_name: &'static CStr,
-        }
-        static PROFILE_MAP: OnceLock<HashMap<xr::Path, ProfileData>> = OnceLock::new();
+        static PROFILE_MAP: OnceLock<HashMap<xr::Path, &'static profiles::ProfileProperties>> =
+            OnceLock::new();
         let get_profile_data = || {
             let map = PROFILE_MAP.get_or_init(|| {
                 let instance = &self.openxr.instance;
@@ -1092,11 +1088,7 @@ impl<C: openxr_data::Compositor> Input<C> {
                     .map(|profile| {
                         (
                             instance.string_to_path(profile.profile_path()).unwrap(),
-                            ProfileData {
-                                controller_type: profile.openvr_controller_type(),
-                                model_number: profile.model(),
-                                render_model_name: profile.render_model_name(hand),
-                            },
+                            profile.properties(),
                         )
                     })
                     .collect()
@@ -1112,16 +1104,16 @@ impl<C: openxr_data::Compositor> Input<C> {
         match property {
             // Audica likes to apply controller specific tweaks via this property
             vr::ETrackedDeviceProperty::ControllerType_String => {
-                get_profile_data().map(|data| data.controller_type)
+                get_profile_data().map(|data| data.openvr_controller_type)
             }
             // I Expect You To Die 3 identifies controllers with this property -
             // why it couldn't just use ControllerType instead is beyond me...
             vr::ETrackedDeviceProperty::ModelNumber_String => {
-                get_profile_data().map(|data| data.model_number)
+                get_profile_data().map(|data| data.model)
             }
             // Resonite won't recognize controllers without this
             vr::ETrackedDeviceProperty::RenderModelName_String => {
-                get_profile_data().map(|data| data.render_model_name)
+                get_profile_data().map(|data| *data.render_model_name.get(hand))
             }
             // Required for controllers to be acknowledged in I Expect You To Die 3
             vr::ETrackedDeviceProperty::SerialNumber_String

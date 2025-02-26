@@ -1,21 +1,16 @@
-use super::{InteractionProfile, PathTranslation, StringToPath};
+use super::{InteractionProfile, PathTranslation, ProfileProperties, Property, StringToPath};
 use crate::input::legacy::LegacyBindings;
-use crate::openxr_data::Hand;
-use std::ffi::CStr;
-
 pub struct Touch;
 
 impl InteractionProfile for Touch {
-    fn openvr_controller_type(&self) -> &'static CStr {
-        c"oculus_touch"
-    }
-    fn model(&self) -> &'static CStr {
-        c"Miramar"
-    }
-    fn render_model_name(&self, hand: Hand) -> &'static CStr {
-        match hand {
-            Hand::Left => c"oculus_quest_controller_left",
-            Hand::Right => c"oculus_quest_controller_right",
+    fn properties(&self) -> &'static ProfileProperties {
+        &ProfileProperties {
+            model: c"oculus_touch",
+            openvr_controller_type: c"Miramar",
+            render_model_name: Property::PerHand {
+                left: c"oculus_quest_controller_left",
+                right: c"oculus_quest_controller_right",
+            },
         }
     }
     fn profile_path(&self) -> &'static str {

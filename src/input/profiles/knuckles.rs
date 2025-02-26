@@ -1,9 +1,7 @@
-use super::{InteractionProfile, PathTranslation, StringToPath};
+use super::{InteractionProfile, PathTranslation, ProfileProperties, Property, StringToPath};
 use crate::input::legacy::LegacyBindings;
-use crate::openxr_data::Hand;
 use openxr as xr;
 use std::f32::consts::FRAC_PI_6;
-use std::ffi::CStr;
 
 pub struct Knuckles;
 
@@ -11,16 +9,14 @@ impl InteractionProfile for Knuckles {
     fn profile_path(&self) -> &'static str {
         "/interaction_profiles/valve/index_controller"
     }
-    fn model(&self) -> &'static CStr {
-        c"Knuckles"
-    }
-    fn openvr_controller_type(&self) -> &'static CStr {
-        c"knuckles"
-    }
-    fn render_model_name(&self, hand: Hand) -> &'static CStr {
-        match hand {
-            Hand::Left => c"valve_controller_knu_1_0_left",
-            Hand::Right => c"valve_controller_knu_1_0_right",
+    fn properties(&self) -> &'static ProfileProperties {
+        &ProfileProperties {
+            model: c"Knuckles",
+            openvr_controller_type: c"knuckles",
+            render_model_name: Property::PerHand {
+                left: c"valve_controller_knu_1_0_left",
+                right: c"valve_controller_knu_1_0_right",
+            },
         }
     }
     fn translate_map(&self) -> &'static [PathTranslation] {
