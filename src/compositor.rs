@@ -365,16 +365,16 @@ impl vr::IVRCompositor028_Interface for Compositor {
         todo!()
     }
     fn IsFullscreen(&self) -> bool {
-        todo!()
+        true
     }
     fn CompositorQuit(&self) {
         todo!()
     }
     fn CompositorGoToBack(&self) {
-        todo!()
+        crate::warn_unimplemented!("CompositorGoToBack");
     }
     fn CompositorBringToFront(&self) {
-        todo!()
+        crate::warn_unimplemented!("CompositorBringToFront");
     }
     fn ClearSkyboxOverride(&self) {
         crate::warn_unimplemented!("ClearSkyboxOverride");
