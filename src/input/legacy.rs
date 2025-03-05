@@ -4,7 +4,23 @@ use glam::Quat;
 use log::{debug, trace, warn};
 use openvr as vr;
 use openxr as xr;
-use std::sync::{atomic::Ordering, OnceLock};
+use std::sync::{
+    atomic::{AtomicBool, AtomicU32, Ordering},
+    OnceLock,
+};
+
+#[derive(Default)]
+pub(super) struct LegacyState {
+    packet_num: AtomicU32,
+    got_state_this_frame: AtomicBool,
+}
+
+impl LegacyState {
+    pub fn on_action_sync(&self) {
+        self.packet_num.fetch_add(1, Ordering::Relaxed);
+        self.got_state_this_frame.store(false, Ordering::Relaxed);
+    }
+}
 
 impl<C: openxr_data::Compositor> Input<C> {
     pub fn get_legacy_controller_state(
@@ -48,15 +64,35 @@ impl<C: openxr_data::Compositor> Input<C> {
         let state = unsafe { state.as_mut() }.unwrap();
         *state = Default::default();
 
-        state.unPacketNum = self.legacy_packet_num.load(Ordering::Relaxed);
+        state.unPacketNum = self.legacy_state.packet_num.load(Ordering::Relaxed);
+
+        // Only send the input event if we haven't already.
+        let mut events = self
+            .legacy_state
+            .got_state_this_frame
+            .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+            .then(|| self.events.lock().unwrap());
 
         let mut read_button = |id, action: &xr::Action<bool>| {
-            let val = action
-                .state(&data.session, hand_path)
-                .unwrap()
-                .current_state as u64
-                * u64::MAX;
-            state.ulButtonPressed |= button_mask_from_id(id) & val;
+            let button_state = action.state(&data.session, hand_path).unwrap();
+
+            let pressed = button_state.current_state;
+            state.ulButtonPressed |= button_mask_from_id(id) & (pressed as u64 * u64::MAX);
+
+            if let Some(events) = &mut events {
+                if button_state.changed_since_last_sync {
+                    events.push_back(super::InputEvent {
+                        ty: if pressed {
+                            vr::EVREventType::ButtonPress
+                        } else {
+                            vr::EVREventType::ButtonUnpress
+                        },
+                        index: device_index,
+                        data: vr::VREvent_Controller_t { button: id as u32 },
+                    });
+                }
+            }
         };
 
         read_button(vr::EVRButtonId::SteamVR_Trigger, &actions.trigger_click);
@@ -110,7 +146,7 @@ pub(super) struct LegacyActionData {
 }
 
 impl LegacyActionData {
-    pub fn new<'a>(instance: &'a xr::Instance, left_hand: xr::Path, right_hand: xr::Path) -> Self {
+    pub fn new(instance: &xr::Instance, left_hand: xr::Path, right_hand: xr::Path) -> Self {
         debug!("creating legacy actions");
         let leftright = [left_hand, right_hand];
         let set = instance
@@ -254,4 +290,193 @@ impl HandSpaces {
 
         self.raw.get()
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::input::profiles::knuckles::Knuckles;
+    use crate::input::tests::Fixture;
+    use openvr as vr;
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct MyEvent {
+        ty: u32,
+        index: vr::TrackedDeviceIndex_t,
+        age: f32,
+        data: EventData,
+    }
+
+    // A small version of the VREvent_Data_t union - writing to this should not cause UB!
+    #[repr(C)]
+    union EventData {
+        controller: vr::VREvent_Controller_t,
+    }
+
+    impl Default for EventData {
+        fn default() -> Self {
+            Self {
+                controller: Default::default(),
+            }
+        }
+    }
+
+    const _: () = {
+        use std::mem::offset_of;
+
+        macro_rules! verify_offset {
+            ($real:ident, $fake:ident) => {
+                assert!(offset_of!(vr::VREvent_t, $real) == offset_of!(MyEvent, $fake));
+            };
+        }
+        verify_offset!(eventType, ty);
+        verify_offset!(trackedDeviceIndex, index);
+        verify_offset!(eventAgeSeconds, age);
+        verify_offset!(data, data);
+    };
+
+    #[test]
+    fn no_legacy_input_before_session_setup() {
+        let fixture = Fixture::new();
+
+        let got_input = fixture.input.get_legacy_controller_state(
+            1,
+            &mut vr::VRControllerState_t::default(),
+            std::mem::size_of::<vr::VRControllerState_t>() as _,
+        );
+        assert!(!got_input);
+
+        fixture.input.frame_start_update();
+        let got_input = fixture.input.get_legacy_controller_state(
+            1,
+            &mut vr::VRControllerState_t::default(),
+            std::mem::size_of::<vr::VRControllerState_t>() as _,
+        );
+        assert!(!got_input);
+    }
+
+    fn legacy_input(
+        get_action: impl FnOnce(&super::LegacyActions) -> openxr::sys::Action,
+        id: vr::EVRButtonId,
+    ) {
+        let mask = 1_u64 << id as u32;
+        let f = Fixture::new();
+        f.input.openxr.restart_session();
+
+        f.set_interaction_profile(&Knuckles, fakexr::UserPath::LeftHand);
+        f.input.frame_start_update();
+        f.input.openxr.poll_events();
+        let action = get_action(
+            &f.input
+                .openxr
+                .session_data
+                .get()
+                .input_data
+                .legacy_actions
+                .get()
+                .unwrap()
+                .actions,
+        );
+
+        let mut state = vr::VRControllerState_t::default();
+        let mut event = MyEvent::default();
+
+        let get_state_and_event =
+            |state: &mut vr::VRControllerState_t, event: &mut MyEvent, expect_event: bool| {
+                assert!(f.input.get_legacy_controller_state(
+                    1,
+                    state,
+                    std::mem::size_of_val(state) as u32
+                ));
+                let got_event = f.input.get_next_event(
+                    std::mem::size_of_val(event) as u32,
+                    event as *mut _ as *mut vr::VREvent_t,
+                );
+                if got_event != expect_event {
+                    match expect_event {
+                        true => panic!("Didn't get expected event"),
+                        false => panic!("Got unexpected event: {}", event.ty),
+                    }
+                }
+            };
+        let update_action_state = |state: bool| {
+            fakexr::set_action_state(
+                action,
+                fakexr::ActionState::Bool(state),
+                fakexr::UserPath::LeftHand,
+            );
+            f.input.frame_start_update();
+        };
+
+        let expect_press = |state: &vr::VRControllerState_t, expect: bool| match expect {
+            // The braces around state.ulButtonPressed are to force create a copy, because
+            // VRControllerState_t is a packed struct and references to unaligned fields are undefined.
+            true => {
+                assert_eq!(
+                    { state.ulButtonPressed },
+                    mask,
+                    "Button not pressed - state: {:b} | button mask: {mask:b}",
+                    { state.ulButtonPressed }
+                );
+            }
+            false => {
+                assert_eq!(
+                    { state.ulButtonPressed },
+                    0,
+                    "Button should be inactive - state: {:b}",
+                    { state.ulButtonPressed }
+                );
+            }
+        };
+
+        // Initial state
+        get_state_and_event(&mut state, &mut event, false);
+        expect_press(&state, false);
+        let last_packet_num = { state.unPacketNum };
+
+        // State change to true
+        update_action_state(true);
+        get_state_and_event(&mut state, &mut event, true);
+        expect_press(&state, true);
+        assert_ne!({ state.unPacketNum }, last_packet_num);
+        let last_packet_num = { state.unPacketNum };
+        assert_eq!(event.ty, vr::EVREventType::ButtonPress as u32);
+        assert_eq!(event.index, 1);
+        assert_eq!(unsafe { event.data.controller }.button, id as u32);
+
+        // No frame update - no change
+        get_state_and_event(&mut state, &mut event, false);
+        expect_press(&state, true);
+        assert_eq!({ state.unPacketNum }, last_packet_num);
+
+        // Frame update but no change
+        f.input.frame_start_update();
+        get_state_and_event(&mut state, &mut event, false);
+        expect_press(&state, true);
+        assert_ne!({ state.unPacketNum }, last_packet_num);
+        let last_packet_num = { state.unPacketNum };
+
+        // State change to false
+        update_action_state(false);
+        get_state_and_event(&mut state, &mut event, true);
+        expect_press(&state, false);
+        assert_ne!({ state.unPacketNum }, last_packet_num);
+        assert_eq!(event.ty, vr::EVREventType::ButtonUnpress as u32);
+        assert_eq!(event.index, 1);
+        assert_eq!(unsafe { event.data.controller }.button, id as u32);
+    }
+
+    macro_rules! test_button {
+        ($field:ident, $id:expr) => {
+            paste::paste! {
+                #[test]
+                fn [<button_ $field>]() {
+                    legacy_input(|actions| actions.$field.as_raw(), $id);
+                }
+            }
+        };
+    }
+
+    test_button!(trigger_click, vr::EVRButtonId::SteamVR_Trigger);
+    test_button!(app_menu, vr::EVRButtonId::ApplicationMenu);
 }

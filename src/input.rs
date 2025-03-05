@@ -22,13 +22,11 @@ use openvr::{self as vr, space_relation_to_openvr_pose};
 use openxr as xr;
 use slotmap::{new_key_type, Key, KeyData, SecondaryMap, SlotMap};
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::ffi::{c_char, CStr, CString};
 use std::mem::ManuallyDrop;
 use std::path::PathBuf;
-use std::sync::{
-    atomic::{AtomicU32, Ordering},
-    Arc, Mutex, OnceLock, RwLock,
-};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
 new_key_type! {
     struct InputSourceKey;
@@ -49,10 +47,17 @@ pub struct Input<C: openxr_data::Compositor> {
     set_map: RwLock<SlotMap<ActionSetKey, String>>,
     loaded_actions_path: OnceLock<PathBuf>,
     cached_poses: Mutex<CachedSpaces>,
-    legacy_packet_num: AtomicU32,
+    legacy_state: legacy::LegacyState,
     skeletal_tracking_level: RwLock<vr::EVRSkeletalTrackingLevel>,
     profile_map: HashMap<xr::Path, &'static profiles::ProfileProperties>,
     estimated_finger_state: [Mutex<FingerState>; 2],
+    events: Mutex<VecDeque<InputEvent>>,
+}
+
+struct InputEvent {
+    ty: vr::EVREventType,
+    index: vr::TrackedDeviceIndex_t,
+    data: vr::VREvent_Controller_t,
 }
 
 #[derive(Debug)]
@@ -111,13 +116,14 @@ impl<C: openxr_data::Compositor> Input<C> {
             left_hand_key,
             right_hand_key,
             cached_poses: Mutex::default(),
-            legacy_packet_num: 0.into(),
+            legacy_state: Default::default(),
             skeletal_tracking_level: RwLock::new(vr::EVRSkeletalTrackingLevel::Estimated),
             profile_map,
             estimated_finger_state: [
                 Mutex::new(FingerState::new()),
                 Mutex::new(FingerState::new()),
             ],
+            events: Mutex::default(),
         }
     }
 
@@ -848,7 +854,7 @@ impl<C: openxr_data::Compositor> vr::IVRInput010_Interface for Input<C> {
             let skeletal_input = data.input_data.estimated_skeleton_actions.get().unwrap();
             sync_sets.push(xr::ActiveActionSet::new(&legacy.set));
             sync_sets.push(xr::ActiveActionSet::new(&skeletal_input.set));
-            self.legacy_packet_num.fetch_add(1, Ordering::Relaxed);
+            self.legacy_state.on_action_sync();
         }
 
         {
@@ -1077,7 +1083,7 @@ impl<C: openxr_data::Compositor> Input<C> {
                     .sync_actions(&[xr::ActiveActionSet::new(&actions.set)])
                     .unwrap();
 
-                self.legacy_packet_num.fetch_add(1, Ordering::Relaxed);
+                self.legacy_state.on_action_sync();
             }
             None => {
                 // If we haven't created our legacy actions yet but we're getting our per frame
@@ -1186,6 +1192,35 @@ impl<C: openxr_data::Compositor> Input<C> {
         // not use self.openxr.session_data.get().
         if let Some(path) = self.loaded_actions_path.get() {
             self.load_action_manifest(data, path).unwrap();
+        }
+    }
+
+    pub fn get_next_event(&self, size: u32, out: *mut vr::VREvent_t) -> bool {
+        const FUNC: &str = "get_next_event";
+        if out.is_null() {
+            warn!("{FUNC}: Got null event pointer.");
+            return false;
+        }
+
+        if let Some(event) = self.events.lock().unwrap().pop_front() {
+            const MIN_CONTROLLER_EVENT_SIZE: usize = std::mem::offset_of!(vr::VREvent_t, data)
+                + std::mem::size_of::<vr::VREvent_Controller_t>();
+            if size < MIN_CONTROLLER_EVENT_SIZE as u32 {
+                warn!("{FUNC}: Provided event struct size ({size}) is smaller than required ({MIN_CONTROLLER_EVENT_SIZE}).");
+                return false;
+            }
+            // VREvent_t can be different sizes depending on the OpenVR version,
+            // so we use raw pointers to avoid creating a reference, because if the
+            // size doesn't match our VREvent_t's size, we are in UB land
+            unsafe {
+                (&raw mut (*out).eventType).write(event.ty as u32);
+                (&raw mut (*out).trackedDeviceIndex).write(event.index);
+                (&raw mut (*out).eventAgeSeconds).write(0.0);
+                (&raw mut (*out).data.controller).write(event.data);
+            }
+            true
+        } else {
+            false
         }
     }
 }

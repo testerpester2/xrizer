@@ -347,69 +347,69 @@ impl vr::IVRSystem022_Interface for System {
         &self,
         origin: vr::ETrackingUniverseOrigin,
         event: *mut vr::VREvent_t,
-        _size: u32,
+        size: u32,
         pose: *mut vr::TrackedDevicePose_t,
     ) -> bool {
-        use std::ptr::addr_of_mut as ptr;
-        let (left_hand_connected, right_hand_connected) = (
-            self.openxr.left_hand.connected(),
-            self.openxr.right_hand.connected(),
-        );
+        for (current, prev, hand) in [
+            (
+                self.openxr.left_hand.connected(),
+                &self.last_connected_hands.left,
+                Hand::Left,
+            ),
+            (
+                self.openxr.right_hand.connected(),
+                &self.last_connected_hands.right,
+                Hand::Right,
+            ),
+        ] {
+            if prev
+                .compare_exchange(!current, current, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+            {
+                debug!(
+                    "sending {hand:?} {}connected",
+                    if current { "" } else { "not " }
+                );
 
-        let device_state_event = |current_state, last_state: &AtomicBool, tracked_device| {
-            last_state.store(current_state, Ordering::Relaxed);
+                // Since the VREvent_t struct can be a variable size, it seems a little dangerous to
+                // create a reference to it, so we'll just operate through pointers.
+                // The eventType, trackedDeviceIndex, and eventAgeSeconds fields have always existed.
+                unsafe {
+                    (&raw mut (*event).eventType).write(if current {
+                        vr::EVREventType::TrackedDeviceActivated as u32
+                    } else {
+                        vr::EVREventType::TrackedDeviceDeactivated as u32
+                    });
 
-            // Since the VREvent_t struct can be a variable size, it seems a little dangerous to
-            // create a reference to it, so we'll just operate through pointers.
-            // The eventType, trackedDeviceIndex, and eventAgeSeconds fields have always existed.
-            unsafe {
-                ptr!((*event).eventType).write(if current_state {
-                    vr::EVREventType::TrackedDeviceActivated as u32
-                } else {
-                    vr::EVREventType::TrackedDeviceDeactivated as u32
-                });
+                    (&raw mut (*event).trackedDeviceIndex).write(hand as u32);
+                    (&raw mut (*event).eventAgeSeconds).write(0.0);
+                    if !pose.is_null() {
+                        pose.write(
+                            self.input
+                                .force(|_| Input::new(self.openxr.clone()))
+                                .get_controller_pose(hand, Some(origin))
+                                .unwrap_or_default(),
+                        );
+                    }
+                }
+                return true;
+            }
+        }
 
-                ptr!((*event).trackedDeviceIndex).write(tracked_device);
-                ptr!((*event).eventAgeSeconds).write(0.0);
-                if !pose.is_null() {
+        self.input.get().is_some_and(|input| {
+            let got_event = input.get_next_event(size, event);
+            if got_event && !pose.is_null() {
+                unsafe {
+                    let index = (&raw const (*event).trackedDeviceIndex).read();
                     pose.write(
-                        self.input
-                            .force(|_| Input::new(self.openxr.clone()))
-                            .get_controller_pose(
-                                Hand::try_from(tracked_device).unwrap(),
-                                Some(origin),
-                            )
-                            .unwrap_or_default(),
+                        input
+                            .get_controller_pose(Hand::try_from(index).unwrap(), None)
+                            .unwrap(),
                     );
                 }
             }
-        };
-
-        if left_hand_connected != self.last_connected_hands.left.load(Ordering::Relaxed) {
-            debug!(
-                "sending left hand {}connected",
-                if left_hand_connected { "" } else { "not " }
-            );
-            device_state_event(
-                left_hand_connected,
-                &self.last_connected_hands.left,
-                Hand::Left as u32,
-            );
-            true
-        } else if right_hand_connected != self.last_connected_hands.right.load(Ordering::Relaxed) {
-            debug!(
-                "sending right hand {}connected",
-                if right_hand_connected { "" } else { "not " }
-            );
-            device_state_event(
-                right_hand_connected,
-                &self.last_connected_hands.right,
-                Hand::Right as u32,
-            );
-            true
-        } else {
-            false
-        }
+            got_event
+        })
     }
 
     fn PollNextEvent(&self, event: *mut vr::VREvent_t, size: u32) -> bool {
