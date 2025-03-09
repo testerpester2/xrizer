@@ -11,8 +11,8 @@ pub struct Touch;
 impl InteractionProfile for Touch {
     fn properties(&self) -> &'static ProfileProperties {
         &ProfileProperties {
-            model: c"oculus_touch",
-            openvr_controller_type: c"Miramar",
+            model: c"Miramar",
+            openvr_controller_type: c"oculus_touch",
             render_model_name: Property::PerHand {
                 left: c"oculus_quest_controller_left",
                 right: c"oculus_quest_controller_right",

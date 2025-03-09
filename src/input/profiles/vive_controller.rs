@@ -11,8 +11,8 @@ pub struct ViveWands;
 impl InteractionProfile for ViveWands {
     fn properties(&self) -> &'static ProfileProperties {
         &ProfileProperties {
-            model: c"vive_controller",
-            openvr_controller_type: c"Vive. Controller MV",
+            model: c"Vive. Controller MV",
+            openvr_controller_type: c"vive_controller",
             render_model_name: Property::BothHands(c"vr_controller_vive_1_5"),
             has_joystick: false,
             has_trackpad: true,
