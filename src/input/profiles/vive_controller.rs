@@ -1,6 +1,6 @@
 use super::{
-    InteractionProfile, PathTranslation, ProfileProperties, Property, SkeletalInputBindings,
-    StringToPath,
+    InteractionProfile, MainAxisType, PathTranslation, ProfileProperties, Property,
+    SkeletalInputBindings, StringToPath,
 };
 use crate::input::legacy::LegacyBindings;
 use crate::openxr_data::Hand;
@@ -14,8 +14,7 @@ impl InteractionProfile for ViveWands {
             model: c"Vive. Controller MV",
             openvr_controller_type: c"vive_controller",
             render_model_name: Property::BothHands(c"vr_controller_vive_1_5"),
-            has_joystick: false,
-            has_trackpad: true,
+            main_axis: MainAxisType::Trackpad,
         }
     }
     fn profile_path(&self) -> &'static str {
@@ -78,7 +77,12 @@ impl InteractionProfile for ViveWands {
             trigger: stp.leftright("input/trigger/value"),
             trigger_click: stp.leftright("input/trigger/click"),
             app_menu: stp.leftright("input/menu/click"),
+            a: vec![],
             squeeze: stp.leftright("input/squeeze/click"),
+            squeeze_click: stp.leftright("input/squeeze/click"),
+            main_xy: stp.leftright("input/trackpad"),
+            main_xy_click: stp.leftright("input/trackpad/click"),
+            main_xy_touch: stp.leftright("input/trackpad/touch"),
         }
     }
 

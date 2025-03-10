@@ -1,6 +1,6 @@
 use super::{
-    InteractionProfile, PathTranslation, ProfileProperties, Property, SkeletalInputBindings,
-    StringToPath,
+    InteractionProfile, MainAxisType, PathTranslation, ProfileProperties, Property,
+    SkeletalInputBindings, StringToPath,
 };
 use crate::input::legacy::LegacyBindings;
 use crate::openxr_data::Hand;
@@ -17,8 +17,7 @@ impl InteractionProfile for Touch {
                 left: c"oculus_quest_controller_left",
                 right: c"oculus_quest_controller_right",
             },
-            has_joystick: true,
-            has_trackpad: false,
+            main_axis: MainAxisType::Thumbstick,
         }
     }
     fn profile_path(&self) -> &'static str {
@@ -65,8 +64,19 @@ impl InteractionProfile for Touch {
             aim_pose: stp.leftright("input/aim/pose"),
             trigger: stp.leftright("input/trigger/value"),
             trigger_click: stp.leftright("input/trigger/value"),
-            app_menu: vec![], // TODO
+            app_menu: vec![
+                stp("/user/hand/left/input/y/click"),
+                stp("/user/hand/right/input/b/click"),
+            ],
+            a: vec![
+                stp("/user/hand/left/input/x/click"),
+                stp("/user/hand/right/input/a/click"),
+            ],
+            squeeze_click: stp.leftright("input/squeeze/value"),
             squeeze: stp.leftright("input/squeeze/value"),
+            main_xy: stp.leftright("input/thumbstick"),
+            main_xy_click: stp.leftright("input/thumbstick/click"),
+            main_xy_touch: stp.leftright("input/thumbstick/touch"),
         }
     }
 

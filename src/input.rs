@@ -7,6 +7,7 @@ mod skeletal;
 #[cfg(test)]
 mod tests;
 
+use profiles::MainAxisType;
 pub use profiles::{InteractionProfile, Profiles};
 use skeletal::FingerState;
 use skeletal::SkeletalInputActionData;
@@ -1160,25 +1161,18 @@ impl<C: openxr_data::Compositor> Input<C> {
         property: vr::ETrackedDeviceProperty,
     ) -> Option<i32> {
         self.get_profile_data(hand).and_then(|data| match property {
-            vr::ETrackedDeviceProperty::Axis0Type_Int32 => {
-                if data.has_joystick {
-                    Some(vr::EVRControllerAxisType::Joystick as _)
-                } else if data.has_trackpad {
-                    Some(vr::EVRControllerAxisType::TrackPad as _)
-                } else {
-                    Some(vr::EVRControllerAxisType::None as _)
-                }
-            }
+            vr::ETrackedDeviceProperty::Axis0Type_Int32 => match data.main_axis {
+                MainAxisType::Thumbstick => Some(vr::EVRControllerAxisType::Joystick as _),
+                MainAxisType::Trackpad => Some(vr::EVRControllerAxisType::TrackPad as _),
+            },
             vr::ETrackedDeviceProperty::Axis1Type_Int32 => {
                 Some(vr::EVRControllerAxisType::Trigger as _)
             }
             vr::ETrackedDeviceProperty::Axis2Type_Int32 => {
-                if data.has_joystick && data.has_trackpad {
-                    Some(vr::EVRControllerAxisType::TrackPad as _)
-                } else {
-                    Some(vr::EVRControllerAxisType::None as _)
-                }
+                // This is actually the grip, and gets recognized as such
+                Some(vr::EVRControllerAxisType::Trigger as _)
             }
+            // TODO: report knuckles trackpad?
             vr::ETrackedDeviceProperty::Axis3Type_Int32
             | vr::ETrackedDeviceProperty::Axis4Type_Int32 => {
                 Some(vr::EVRControllerAxisType::None as _)

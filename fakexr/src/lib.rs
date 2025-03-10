@@ -50,7 +50,7 @@ pub fn deactivate_action(action: xr::Action) {
     action.active.store(false, Ordering::Relaxed);
 }
 
-#[derive(Copy, Clone, PartialEq)]
+#[derive(Copy, Clone, PartialEq, Debug)]
 pub enum UserPath {
     /// /user/hand/left
     LeftHand,
@@ -1088,15 +1088,11 @@ extern "system" fn sync_actions(
                 (data.right, &action.state.right),
             ] {
                 let mut d = state.load();
-                match new {
-                    Some(new_state) => {
-                        if d.state != new_state {
-                            d.changed = true;
-                            d.state = new_state;
-                        }
-                    }
-                    None => {
-                        d.changed = false;
+                d.changed = false;
+                if let Some(new_state) = new {
+                    if d.state != new_state {
+                        d.changed = true;
+                        d.state = new_state;
                     }
                 }
                 state.store(d);

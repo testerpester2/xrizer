@@ -1,8 +1,8 @@
 use glam::Mat4;
 
 use super::{
-    InteractionProfile, PathTranslation, ProfileProperties, Property, SkeletalInputBindings,
-    StringToPath,
+    InteractionProfile, MainAxisType, PathTranslation, ProfileProperties, Property,
+    SkeletalInputBindings, StringToPath,
 };
 use crate::input::legacy::LegacyBindings;
 use crate::openxr_data::Hand;
@@ -15,8 +15,7 @@ impl InteractionProfile for SimpleController {
             model: c"generic",
             openvr_controller_type: c"<unknown>",
             render_model_name: Property::BothHands(c"generic_controller"),
-            has_joystick: false,
-            has_trackpad: false,
+            main_axis: MainAxisType::Thumbstick,
         }
     }
     fn profile_path(&self) -> &'static str {
@@ -44,7 +43,12 @@ impl InteractionProfile for SimpleController {
             trigger: stp.leftright("input/select/click"),
             trigger_click: stp.leftright("input/select/click"),
             app_menu: stp.leftright("input/menu/click"),
+            a: vec![],
             squeeze: stp.leftright("input/menu/click"),
+            squeeze_click: stp.leftright("input/menu/click"),
+            main_xy: vec![],
+            main_xy_click: vec![],
+            main_xy_touch: vec![],
         }
     }
 

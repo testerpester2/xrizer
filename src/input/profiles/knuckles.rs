@@ -1,8 +1,8 @@
 use glam::{EulerRot, Mat4, Quat, Vec3};
 
 use super::{
-    InteractionProfile, PathTranslation, ProfileProperties, Property, SkeletalInputBindings,
-    StringToPath,
+    InteractionProfile, MainAxisType, PathTranslation, ProfileProperties, Property,
+    SkeletalInputBindings, StringToPath,
 };
 use crate::input::legacy::LegacyBindings;
 use crate::openxr_data::Hand;
@@ -21,8 +21,7 @@ impl InteractionProfile for Knuckles {
                 left: c"valve_controller_knu_1_0_left",
                 right: c"valve_controller_knu_1_0_right",
             },
-            has_joystick: true,
-            has_trackpad: true,
+            main_axis: MainAxisType::Thumbstick,
         }
     }
     fn translate_map(&self) -> &'static [PathTranslation] {
@@ -92,9 +91,14 @@ impl InteractionProfile for Knuckles {
             grip_pose: stp.leftright("input/grip/pose"),
             aim_pose: stp.leftright("input/aim/pose"),
             app_menu: stp.leftright("input/b/click"),
+            a: stp.leftright("input/a/click"),
             trigger: stp.leftright("input/trigger/value"),
             trigger_click: stp.leftright("input/trigger/click"),
             squeeze: stp.leftright("input/squeeze/value"),
+            squeeze_click: stp.leftright("input/squeeze/value"),
+            main_xy: stp.leftright("input/thumbstick"),
+            main_xy_click: stp.leftright("input/thumbstick/click"),
+            main_xy_touch: stp.leftright("input/thumbstick/touch"),
         }
     }
 

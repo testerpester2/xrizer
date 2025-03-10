@@ -45,6 +45,11 @@ impl<T> Property<T> {
     }
 }
 
+pub enum MainAxisType {
+    Thumbstick,
+    Trackpad,
+}
+
 pub struct ProfileProperties {
     /// Corresponds to Prop_ModelNumber_String
     /// Can be pulled from a SteamVR System Report
@@ -55,8 +60,7 @@ pub struct ProfileProperties {
     /// Corresponds to RenderModelName_String
     /// Can be found in SteamVR under resources/rendermodels (some are in driver subdirs)
     pub render_model_name: Property<&'static CStr>,
-    pub has_joystick: bool,
-    pub has_trackpad: bool,
+    pub main_axis: MainAxisType,
 }
 
 pub(super) struct PathTranslation {
