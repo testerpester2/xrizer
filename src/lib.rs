@@ -1,3 +1,5 @@
+#![deny(clippy::all)]
+
 mod applications;
 mod chaperone;
 mod clientcore;

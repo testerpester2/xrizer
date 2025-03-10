@@ -566,7 +566,7 @@ pub struct SkeletalInputActionData {
 }
 
 impl SkeletalInputActionData {
-    pub fn new<'a>(instance: &'a xr::Instance, left_hand: xr::Path, right_hand: xr::Path) -> Self {
+    pub fn new(instance: &xr::Instance, left_hand: xr::Path, right_hand: xr::Path) -> Self {
         debug!("creating skeletal input actions");
         let leftright = [left_hand, right_hand];
         let set = instance

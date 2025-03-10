@@ -114,12 +114,12 @@ impl<C: openxr_data::Compositor> Input<C> {
             manifest.default_bindings,
             &legacy.actions,
             &info_action,
-            &skeletal_input,
+            skeletal_input,
         );
 
         let xr_sets: Vec<_> = sets
             .values()
-            .chain([&legacy.set, &info_set, &skeletal_input.set].into_iter())
+            .chain([&legacy.set, &info_set, &skeletal_input.set])
             .collect();
         session_data.session.attach_action_sets(&xr_sets).unwrap();
 
@@ -759,6 +759,7 @@ struct Vector2Input {
 }
 
 impl<C: openxr_data::Compositor> Input<C> {
+    #[allow(clippy::too_many_arguments)]
     fn load_bindings(
         &self,
         parent_path: &Path,
@@ -841,6 +842,7 @@ impl<C: openxr_data::Compositor> Input<C> {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn load_bindings_for_profile(
         &self,
         profile: &dyn InteractionProfile,
