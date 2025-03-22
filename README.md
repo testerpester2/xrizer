@@ -3,10 +3,26 @@
 xrizer is a reimplementation of OpenVR on top of OpenXR. This enables you to run OpenVR games through any OpenXR runtime without running SteamVR.
 
 Note that xrizer is currently immature. Many things are likely broken, so please open bugs! For a more mature solution, check out [OpenComposite](https://gitlab.com/znixian/OpenComposite), which some of the code in this repo is based on.
+
+# FAQ
+
+## What games work on xrizer?
+
+You tell me! The aim is for all standard (non overlay/utility/background) OpenVR apps to function as they would on SteamVR. Obviously this is not 100% the case, so open issues as you run into games that don't work properly and they will be addressed in time.
+
+## Why rewrite OpenComposite?
+
+OpenComposite has several years of existence over xrizer, so rewriting it is no small task. However, OpenComposite also lacks sufficient testing infrastructure, making it easy to inadvertently introduce regressions, and the way it's architected makes it difficult to write simple tests. OpenComposite was also not originally designed to utilize OpenXR, and there's still some legacy stuff from that period remaining in the codebase, which can make it more convoluted to understand. Dealing with these issues for a while led me to conclude that it would be more productive to rewrite it.
+## Why Rust?
+
+I like Rust. I don't like CMake.
+
+
 # Building
 ```
 # dev build
 cargo xbuild
+
 # release build
 cargo xbuild --release
 ```
@@ -15,8 +31,10 @@ cargo xbuild --release
 
 In order to use xrizer, you must change where OpenVR games search for the runtime. There are two ways to accomplish this:
 
-1. Set the `VR_OVERRIDE` environment variable when launching a game: `VR_OVERRIDE=/path/to/xrizer <command>` (steam launch options: `VR_OVERRIDE=/path/to/xrizer %command%`)
-2. Add the path to xrizer to `$XDG_CONFIG_HOME/openvr/openvrpaths.vrpath`
+1. Add the path to xrizer to `$XDG_CONFIG_HOME/openvr/openvrpaths.vrpath`.
+2. Set the `VR_OVERRIDE` environment variable when launching a game: `VR_OVERRIDE=/path/to/xrizer <command>` (steam launch options: `VR_OVERRIDE=/path/to/xrizer %command%`)
+   - Note that if you do this method, you must have an existing valid `openvrpaths.vrpath` file, though xrizer doesn't need to be in it.
+
 
 After building, the output directory can be used for either of these paths. If you built the dev build, this will be `<path to xrizer repo>/target/debug`, and for the release build this is `<path to xrizer repo>/target/release`.
 
@@ -52,9 +70,16 @@ All contributions welcome.
 - If you're opening a bug, please submit a log. The log is located at `$XDG_STATE_HOME/xrizer/xrizer.txt`, or `$HOME/.local/state/xrizer/xrizer.txt` if `$XDG_STATE_HOME` is not set.
 - If submitting pull requests, please consider writing a test if possible/helpful - OpenVR is a large API surface and games are fickle, so ensuring things are well tested prevents future unintentional breakage.
 
+# Environment Variables
+_RUST_LOG_ - This is used for adjusting the logging of xrizer. See the [env_logger documentation](https://docs.rs/env_logger/latest/env_logger/#enabling-logging) for understanding how this works. Here are some useful nonstandard logging targets:
+- `openvr_calls` - logs the name of each OpenVR function as they are called
+- `tracked_property` - logs the name and device index of each requested tracked device property.
+
+_XRIZER_CUSTOM_BINDINGS_DIR_ - This can be used to supply a directory that xrizer will search for controller bindings files. Note that the format of these bindings aren't actually documented anywhere, but it's easy enough to modify an existing file, and xrizer parses them so you can read the source too.
+
 # See also
 
 - [OpenComposite](https://gitlab.com/znixian/OpenOVR) - The original OpenVR/OpenXR implementation, much more mature than xrizer. Some of the code in this repo was rewritten based on OpenComposite.
 - [OpenVR](https://github.com/ValveSoftware/openvr)
 - [Monado](https://gitlab.freedesktop.org/monado/monado) - An open source OpenXR runtime
-- [WiVRn](https://github.com/WiVRn/WiVRn) - An OpenXR streaming runtime for standalone headsets
+- [WiVRn](https://github.com/WiVRn/WiVRn) - An OpenXR streaming runtime for standalone headsets, based on Monado.
