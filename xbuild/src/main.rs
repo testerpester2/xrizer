@@ -80,11 +80,21 @@ fn main() {
     }
 
     let vrclient_path = parent.join("bin/linux64/vrclient.so");
-    match std::os::unix::fs::symlink(lib_path, vrclient_path) {
+    match std::os::unix::fs::symlink(&lib_path, vrclient_path) {
         Ok(_) => (),
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => (),
         err => {
             eprintln!("Failed to create vrclient symlink: {err:?}");
+            std::process::exit(1);
+        }
+    }
+
+    // This file seems to prevent Steam from overwriting xrizer as a runtime path in the openvrpaths.
+    let version = parent.join("bin/version.txt");
+    match std::fs::File::create(version) {
+        Ok(_) => (),
+        err => {
+            eprintln!("Failed to create bin/linux64 directory: {err:?}");
             std::process::exit(1);
         }
     }
