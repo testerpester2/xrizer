@@ -117,6 +117,11 @@ pub fn get_suggested_bindings(action: xr::Action, profile: xr::Path) -> Vec<Stri
         .collect()
 }
 
+pub fn session_frame_state(session: xr::Session) -> FrameState {
+    let session = session.to_handle().unwrap();
+    session.frame_state.load()
+}
+
 macro_rules! fn_unimplemented_impl {
     ($($param:ident),+) => {
         fn_unimplemented_impl!($($param),+  -> []);
@@ -416,10 +421,44 @@ struct Session {
     left_hand: HandData,
     right_hand: HandData,
     spaces: Mutex<HashSet<DefaultKey>>,
-    frame_active: AtomicBool,
     state: AtomicCell<xr::SessionState>,
     state_synced: AtomicBool,
     should_render: AtomicBool,
+    frame_state: AtomicCell<FrameState>,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum FrameState {
+    Waited,
+    Begun,
+    Ended,
+}
+
+fn transition_frame_state(
+    state: &AtomicCell<FrameState>,
+    new: FrameState,
+) -> Result<(), xr::Result> {
+    let old = state.load();
+    let transition = |allowed_state| {
+        if allowed_state == new {
+            Ok(())
+        } else {
+            println!("Invalid transition from {old:?} to {new:?}");
+            Err(xr::Result::ERROR_CALL_ORDER_INVALID)
+        }
+    };
+
+    let ret = match old {
+        FrameState::Waited => transition(FrameState::Begun),
+        FrameState::Begun => Ok(()),
+        FrameState::Ended => transition(FrameState::Waited),
+    };
+
+    if ret.is_ok() {
+        state.store(new);
+    }
+
+    ret
 }
 
 impl Drop for Session {
@@ -670,10 +709,10 @@ extern "system" fn create_session(
         left_hand: Default::default(),
         right_hand: Default::default(),
         spaces: Default::default(),
-        frame_active: false.into(),
         state: xr::SessionState::READY.into(),
         state_synced: true.into(),
         should_render: false.into(),
+        frame_state: FrameState::Ended.into(),
     });
 
     let tx = sess.event_sender.clone();
@@ -1462,6 +1501,9 @@ extern "system" fn wait_frame(
     state: *mut xr::FrameState,
 ) -> xr::Result {
     let session = get_handle!(session);
+    if let Err(e) = transition_frame_state(&session.frame_state, FrameState::Waited) {
+        return e;
+    }
     unsafe {
         state.write(xr::FrameState {
             ty: xr::FrameState::TYPE,
@@ -1479,16 +1521,17 @@ extern "system" fn begin_frame(
     _info: *const xr::FrameBeginInfo,
 ) -> xr::Result {
     let session = get_handle!(session);
-    session.frame_active.store(true, Ordering::Relaxed);
+    if let Err(e) = transition_frame_state(&session.frame_state, FrameState::Begun) {
+        return e;
+    }
     xr::Result::SUCCESS
 }
 
 extern "system" fn end_frame(session: xr::Session, _info: *const xr::FrameEndInfo) -> xr::Result {
     let session = get_handle!(session);
-    if !session.frame_active.load(Ordering::Relaxed) {
-        return xr::Result::ERROR_CALL_ORDER_INVALID;
+    if let Err(e) = transition_frame_state(&session.frame_state, FrameState::Ended) {
+        return e;
     }
-    session.frame_active.store(false, Ordering::Relaxed);
     if session.state.load() == xr::SessionState::READY {
         session.synchronized();
     }
