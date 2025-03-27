@@ -619,7 +619,7 @@ mod tests {
 
         let state = get_state(RightHand);
         expect_press(&state, false);
-        expect_no_event(format!("RightHand"));
+        expect_no_event("RightHand".to_string());
     }
 
     macro_rules! test_button {

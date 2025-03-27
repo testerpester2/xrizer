@@ -647,7 +647,7 @@ fn raw_pose_switch_profile() {
 
     fn offset_to_pose(offset: &Mat4) -> xr::Posef {
         let translation = offset.w_axis.truncate();
-        let rotation = Quat::from_mat4(&offset);
+        let rotation = Quat::from_mat4(offset);
 
         xr::Posef {
             orientation: xr::Quaternionf {
