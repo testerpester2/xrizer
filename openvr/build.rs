@@ -89,8 +89,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let headers = [
         version!(2, 5, 1),
         version!(2, 0, 10),
-        version!(1, 18, 19),
+        version!(1, 16, 8),
         version!(1, 14, 15),
+        version!(1, 8, 19),
         version!(1, 7, 15),
         version!(1, 4, 18),
         version!(1, 3, 22),
