@@ -95,15 +95,22 @@ impl System {
 
     pub fn reset_views(&self) {
         std::mem::take(&mut *self.views.lock().unwrap());
+        let session = self.openxr.session_data.get();
+        let display_time = self.openxr.display_time.get();
+        let mut views = self.views.lock().unwrap();
+        views.get_views(&session, display_time, xr::ReferenceSpaceType::VIEW);
+        views.get_views(
+            &session,
+            display_time,
+            session.current_origin_as_reference_space(),
+        );
     }
 
     pub fn get_views(&self, ty: xr::ReferenceSpaceType) -> ViewData {
         tracy_span!();
         let session = self.openxr.session_data.get();
-        self.views
-            .lock()
-            .unwrap()
-            .get_views(&session, self.openxr.display_time.get(), ty)
+        let mut views = self.views.lock().unwrap();
+        views.get_views(&session, self.openxr.display_time.get(), ty)
     }
 }
 
