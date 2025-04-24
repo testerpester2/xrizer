@@ -69,7 +69,7 @@ impl ViewCache {
 
 #[derive(macros::InterfaceImpl)]
 #[interface = "IVRSystem"]
-#[versions(022, 021, 020, 019, 017, 016, 015)]
+#[versions(022, 021, 020, 019, 017, 016, 015, 014)]
 pub struct System {
     openxr: Arc<RealOpenXrData>, // We don't need to test session restarting.
     input: Injected<Input<crate::compositor::Compositor>>,
@@ -787,6 +787,21 @@ impl vr::IVRSystem016On017 for System {
     fn GetOutputDevice(&self, _device: *mut u64, _texture_type: vr::ETextureType) {
         // TODO: figure out what to pass for the instance...
         todo!()
+    }
+}
+
+impl vr::IVRSystem014On015 for System {
+    fn GetProjectionMatrix(
+        &self,
+        eye: vr::EVREye,
+        near_z: f32,
+        far_z: f32,
+        _proj_type: vr::EGraphicsAPIConvention,
+    ) -> vr::HmdMatrix44_t {
+        // According to this bug: https://github.com/ValveSoftware/openvr/issues/70 the projection type
+        // is straight up ignored in SteamVR anyway, lol. Bug for bug compat!
+
+        <Self as vr::IVRSystem022_Interface>::GetProjectionMatrix(self, eye, near_z, far_z)
     }
 }
 
